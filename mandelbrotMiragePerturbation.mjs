@@ -1,9 +1,31 @@
 /**
- * @author Bert Baron
+ * Perturbation version of the mirage iteration (see mandelbrotMirage.mjs), enabling deep zoom
+ * beyond the float64 limit of about 1e13, up to about 1e300. Modeled on MandelbrotPerturbation.
+ *
+ * The mirage map is not complex-analytic (it mixes in the conjugate and the |z|² dependent
+ * blend factor), but it can still be perturbed exactly. With the reference orbit Z = (X, Y),
+ * the perturbed point z = Z + ε, ε = (u, v) and per-orbit-point values
+ *
+ *   Q = 1 + X² + Y²,  S = β/Q,  T = 1 − 2S
+ *
+ * the perturbation of the blend factor follows from q = 2Xu + 2Yv + u² + v² (the perturbation
+ * of 1 + |z|²) as
+ *
+ *   τ = t − T = 2β·q / (Q·(Q + q))
+ *
+ * and the exact difference of the squared mirrored values w² − W² expands cancellation-free to
+ *
+ *   (w² − W²)ᵣ = (2X+u)·u − T²·(2Y+v)·v − (2T+τ)·τ·(Y+v)²
+ *   (w² − W²)ᵢ = 2·( X·(T·v + τ·(Y+v)) + u·(T+τ)·(Y+v) )
+ *
+ * giving εₙ₊₁ = (1−α)·εₙ + α·((w² − W²) + δ). For β = 0 (τ = 0, T = 1) this reduces exactly to
+ * the classic Mandelbrot perturbation εₙ₊₁ = (2·Zₙ + εₙ)·εₙ + δ, as it should.
  */
 import {WorkerContext, smoothen} from "./workerContext.mjs";
+import * as fxp from "./fxp.mjs";
+import {DEFAULT_ALPHA, DEFAULT_BETA, bailoutFor} from "./mandelbrotMirage.mjs";
 
-export class MandelbrotPerturbation {
+export class MandelbrotMiragePerturbation {
     /**
      * @param {WorkerContext} ctx
      */
@@ -15,8 +37,11 @@ export class MandelbrotPerturbation {
         this.lastZq = 0
     }
 
-    async process(task){
+    async process(task) {
         this.max_iter = task.maxIter
+        this.alpha = task.mirageAlpha ?? DEFAULT_ALPHA
+        this.beta = task.mirageBeta ?? DEFAULT_BETA
+        this.bailout = bailoutFor(this.alpha)
         const w = task.w
         const h = task.h
 
@@ -56,8 +81,8 @@ export class MandelbrotPerturbation {
         const refr = rmin.bigInt
         const refi = imin.bigInt
 
-        const bailout = smooth ? 128 : 4
-        const bigBailout = BigInt(bailout) << bigScale
+        const bailout = this.bailout
+        const bigBailout = BigInt(Math.ceil(bailout)) << bigScale
 
         this.updateCache(task, cWidth, cHeight, scaleFactor)
 
@@ -93,7 +118,7 @@ export class MandelbrotPerturbation {
                         const refDr = referencePoint[0][0]
                         const refDi = referencePoint[0][1]
 
-                        const iter = this.mandlebrot_perturbation(dr - refDr, di - refDi, this.max_iter, bailout, referencePoint[3], referencePoint[4])
+                        const iter = this.mirage_perturbation(dr - refDr, di - refDi, this.max_iter, bailout, referencePoint[3], referencePoint[4])
                         if (iter >= 0) {
                             values[offset] = smoothen(smooth, offset, iter, this.lastZq)
                             found = true
@@ -166,14 +191,20 @@ export class MandelbrotPerturbation {
      * @param {number} dci
      * @param {number} max_iter
      * @param {number} bailout
-     * @param {Float64Array} zs flattened reference sequence with stride 3: (zr, zi, zqErrorBound)
+     * @param {Float64Array} zs flattened reference sequence with stride 5: (X, Y, T, Q, zqErrorBound)
      * @param {number} numZs number of points in zs
      * @returns {number} iter
      */
-    mandlebrot_perturbation(dcr, dci, max_iter, bailout, zs, numZs) {
-        // ε₀ = δ
-        let ezr = dcr
-        let ezi = dci
+    mirage_perturbation(dcr, dci, max_iter, bailout, zs, numZs) {
+        const alpha = this.alpha
+        const a1 = 1 - alpha
+        const beta2 = 2 * this.beta
+        // the first mirage step turns z₀ = 0 into α·c, so ε starts at α·δ, which is also the
+        // additive term of every following step
+        const adr = alpha * dcr
+        const adi = alpha * dci
+        let u = adr
+        let v = adi
 
         let iter = -1
         let zzq = 0
@@ -188,27 +219,31 @@ export class MandelbrotPerturbation {
             }
 
             // Zₙ
-            const base = iter * 3
-            const zr = zs[base]
-            const zi = zs[base + 1]
-            const zqErrorBound = zs[base + 2]
+            const base = iter * 5
+            const X = zs[base]
+            const Y = zs[base + 1]
+            const T = zs[base + 2]
+            const Q = zs[base + 3]
 
             // Z'ₙ = Zₙ + εₙ
-            const zzr = zr + ezr
-            const zzi = zi + ezi
+            const zzr = X + u
+            const zzi = Y + v
             zzq = zzr * zzr + zzi * zzi
-            if (zzq < zqErrorBound) {
+            if (zzq < zs[base + 4]) {
                 this.lastZq = 0
                 return -1
             }
 
-            // εₙ₊₁ = 2·zₙ·εₙ + εₙ² + δ = (2·zₙ + εₙ)·εₙ + δ
-            const zr_ezr_2 = zr + zzr
-            const zi_ezi_2 = zi + zzi
-            const _ezr = zr_ezr_2 * ezr - zi_ezi_2 * ezi
-            const _ezi = zr_ezr_2 * ezi + zi_ezi_2 * ezr
-            ezr = _ezr + dcr
-            ezi = _ezi + dci
+            // εₙ₊₁ = (1−α)·εₙ + α·((w² − W²) + δ), see file header
+            const p1 = (X + zzr) * u  // (2X + u)·u
+            const p2 = (Y + zzi) * v  // (2Y + v)·v
+            const q = p1 + p2
+            const tau = beta2 * q / (Q * (Q + q))
+            const yv = zzi  // Y + v
+            const wqr = p1 - T * T * p2 - (2 * T + tau) * tau * yv * yv
+            const wqi = 2 * (X * (T * v + tau * yv) + u * (T + tau) * yv)
+            u = a1 * u + alpha * wqr + adr
+            v = a1 * v + alpha * wqi + adi
         }
         this.lastZq = zzq
         return iter + 4
@@ -223,22 +258,27 @@ export class MandelbrotPerturbation {
      * @param {number} scaleFactor
      * @param {BigInt} bailout
      * @returns {[[number, number], number, BigInt, Float64Array, number]} [rr, ri], iter, zq, zs, numZs where zs
-     * is the flattened reference sequence with stride 3: (zr, zi, zqErrorBound)
+     * is the flattened reference sequence with stride 5: (X, Y, T, Q, zqErrorBound)
      */
     calculate_reference(refr, refi, dr, di, bigScale, scaleFactor, bailout) {
         const start = performance.now()
         const rr = refr + BigInt(Math.round(dr * scaleFactor))
         const ri = refi + BigInt(Math.round(di * scaleFactor))
-        const [iter, zq, seq] = this.mandelbrot_high_precision(rr, ri, this.max_iter, bailout, bigScale)
+        const [iter, zq, seq] = this.mirage_high_precision(rr, ri, this.max_iter, bailout, bigScale)
+        const beta2 = 2 * this.beta
         const iterations = seq.length
-        const zs = new Float64Array(iterations * 3)
-        for (let idx = 0, base = 0; idx < iterations; idx++, base += 3) {
+        const zs = new Float64Array(iterations * 5)
+        for (let idx = 0, base = 0; idx < iterations; idx++, base += 5) {
             const point = seq[idx]
-            const z_real = Number(point[0]) / scaleFactor
-            const z_imag = Number(point[1]) / scaleFactor
-            zs[base] = z_real
-            zs[base + 1] = z_imag
-            zs[base + 2] = (z_real * z_real + z_imag * z_imag) * 0.000001
+            const x = Number(point[0]) / scaleFactor
+            const y = Number(point[1]) / scaleFactor
+            const zq2 = x * x + y * y
+            const q = 1 + zq2
+            zs[base] = x
+            zs[base + 1] = y
+            zs[base + 2] = 1 - beta2 / q  // T = 1 − 2β/Q
+            zs[base + 3] = q
+            zs[base + 4] = zq2 * 0.000001
         }
         const end = performance.now()
         this.ctx.stats.timeSpendInHighPrecision += end - start
@@ -247,36 +287,57 @@ export class MandelbrotPerturbation {
     }
 
     /**
+     * The mirage iteration in fixed-point arithmetic. α and β (float64 values) are represented
+     * exactly in fixed point, the blend s = β/(1+|z|²) needs one fixed-point division per iteration.
+     *
      * @param {BigInt} re
      * @param {BigInt} im
      * @param {number} max_iter
      * @param {BigInt} bailout
      * @param {BigInt} scale
-     * @returns {[number, BigInt, [BigInt, BigInt][]]} [iterations, zq, sequence] where sequence is a list of [zr, zi] points
+     * @returns {[number, BigInt, [BigInt, BigInt][]]} [iterations, zq, sequence] where sequence is a list of [X, Y] points
      */
-    mandelbrot_high_precision(re, im, max_iter, bailout, scale) {
-        const scale_1 = scale - 1n
-        let zr = 0n
-        let zi = 0n
+    mirage_high_precision(re, im, max_iter, bailout, scale) {
+        const one = 1n << scale
+        const alphaFx = fxp.fromNumber(this.alpha, Number(scale)).bigInt
+        const a1Fx = one - alphaFx
+        const betaShifted = fxp.fromNumber(this.beta, Number(scale)).bigInt << scale
+        let X = 0n
+        let Y = 0n
         let iter = -1
-        let zrq = 0n
-        let ziq = 0n
+        let Xq = 0n
+        let Yq = 0n
         let zq = 0n
         const seq = []
         while (zq <= bailout) {
             if (iter++ === max_iter) {
                 return [2, 0n, seq]
             }
-            zi = (zr * zi >> scale_1) + im
-            zr = zrq - ziq + re
-            seq.push([zr, zi])
-            zrq = (zr * zr) >> scale
-            ziq = (zi * zi) >> scale
-            zq = zrq + ziq
+            const Q = one + Xq + Yq
+            const s = betaShifted / Q
+            const T = one - (s << 1n)
+            const TY = (T * Y) >> scale
+            const XTY = (X * TY) >> scale
+            const TYq = (TY * TY) >> scale
+            const nX = (a1Fx * X + alphaFx * (Xq - TYq + re)) >> scale
+            const nY = (a1Fx * Y + alphaFx * ((XTY << 1n) + im)) >> scale
+            X = nX
+            Y = nY
+            seq.push([X, Y])
+            Xq = (X * X) >> scale
+            Yq = (Y * Y) >> scale
+            zq = Xq + Yq
         }
-        zi = (zr * zi >> scale_1) + im
-        zr = zrq - ziq + re
-        seq.push([zr, zi])
+        // one more point so that pixels escaping just after the reference still have orbit data
+        const Q = one + Xq + Yq
+        const s = betaShifted / Q
+        const T = one - (s << 1n)
+        const TY = (T * Y) >> scale
+        const XTY = (X * TY) >> scale
+        const TYq = (TY * TY) >> scale
+        const nX = (a1Fx * X + alphaFx * (Xq - TYq + re)) >> scale
+        const nY = (a1Fx * Y + alphaFx * ((XTY << 1n) + im)) >> scale
+        seq.push([nX, nY])
         return [iter + 4, zq, seq]
     }
 }
