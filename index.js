@@ -18,6 +18,14 @@ const MAX_PIXEL_SIZE = 16
 
 const MIN_ZOOM = fxp.fromNumber(1)
 
+// The mirage set lives in a different part of the complex plane than the mandelbrot set
+const FRACTAL_HOME_VIEWS = {
+    mandelbrot: [-0.5, 0],
+    mirage: [-5.9, 0],
+}
+const MIRAGE_DEFAULT_ALPHA = 0.55
+const MIRAGE_DEFAULT_BETA = 1.9
+
 class MyWorker {
     constructor(taskqueue, resulthandler) {
         this.taskqueue = taskqueue
@@ -64,6 +72,9 @@ class Mandelbrot {
         this.max_iter = DEFAULT_ITERATIONS
         this.smooth = true
         this.useGpu = false
+        this.fractalType = 'mandelbrot'
+        this.mirageAlpha = MIRAGE_DEFAULT_ALPHA
+        this.mirageBeta = MIRAGE_DEFAULT_BETA
 
         this.palette = []
         this.paletteSelector = paletteSelector
@@ -111,9 +122,14 @@ class Mandelbrot {
         this._updatePrecision()
     }
 
+    // The WebGPU implementation only renders the classic Mandelbrot set
+    gpuActive() {
+        return this.useGpu && this.fractalType === 'mandelbrot'
+    }
+
     _updatePrecision() {
         this.requiredPrecision = this.zoom.multiply(fxp.fromNumber(this.width).withScale(this.zoom.scale)).bits() + 5
-        if (this.useGpu) {
+        if (this.gpuActive()) {
             this.precision = Math.max(64, Math.ceil(this.requiredPrecision / 8) * 8)
         } else {
             this.precision = Math.max(58, this.requiredPrecision)
@@ -162,7 +178,7 @@ class Mandelbrot {
     }
 
     startNextJob(resetCaches) {
-        if (this.useGpu) {
+        if (this.gpuActive()) {
             this.startNextGpuJob(resetCaches)
             return
         }
@@ -191,7 +207,7 @@ class Mandelbrot {
             const buffer = screen.buffer
             const w = buffer.width
             const h = buffer.height
-            const paramHash = `${this.max_iter}-${this.smooth}`
+            const paramHash = `${this.max_iter}-${this.smooth}-${this.fractalType}-${this.mirageAlpha}-${this.mirageBeta}`
 
             const frameTopLeft = this.canvas2complex(0, 0)
             // We need to adjust for the case that the width or height is not dividable by the pixel size
@@ -228,7 +244,10 @@ class Mandelbrot {
                         smooth: this.smooth,
                         maxIter: this.max_iter,
                         precision: this.precision,
-                        requiredPrecision: this.requiredPrecision
+                        requiredPrecision: this.requiredPrecision,
+                        fractal: this.fractalType,
+                        mirageAlpha: this.mirageAlpha,
+                        mirageBeta: this.mirageBeta
                     }
                     this.taskqueue.push(task)
                 }
@@ -247,7 +266,7 @@ class Mandelbrot {
     }
 
     onResult(answer) {
-        if (this.useGpu) {
+        if (this.gpuActive()) {
             this.onGpuResult(answer)
             return
         }
@@ -743,6 +762,9 @@ function zoomWithClicks(clicks, cooldown) {
 function zoomWithFactor(factor, cooldown) {
     const lowerBound = MIN_ZOOM.withScale(fractal.precision)
     if (fractal.zoom.leq(lowerBound) && factor < 1) return
+    // The mirage perturbation has no extended-float implementation, so cap the zoom where
+    // the regular perturbation algorithm runs out of float64 exponent range (about 1e300)
+    if (fractal.fractalType === 'mirage' && factor > 1 && fractal.requiredPrecision > 1000) return
     let bigFactor = fxp.fromNumber(factor, fractal.precision);
     const ptr = fractal.canvas2complex(lastX, lastY)
     fractal.setCenter(ptr)
@@ -906,6 +928,12 @@ const appElement = document.getElementById('app')
 const iterationsElement = document.getElementById('max-iterations')
 const fullScreenButton = document.getElementById('fullscreen')
 const smoothToggle = document.getElementById('smooth')
+const fractalSelect = document.getElementById('fractal-select')
+const mirageParamsRow = document.getElementById('mirage-params')
+const mirageAlphaSlider = document.getElementById('mirage-alpha')
+const mirageBetaSlider = document.getElementById('mirage-beta')
+const mirageAlphaLabel = document.getElementById('mirage-alpha-label')
+const mirageBetaLabel = document.getElementById('mirage-beta-label')
 const resetElement = document.getElementById('reset')
 const fullResToggle = document.getElementById('fullres')
 const gpuToggle = document.getElementById('gpu')
@@ -1005,6 +1033,34 @@ function initListeners() {
         fractal.smooth = event.target.checked
         redraw()
     })
+    fractalSelect.addEventListener('change', (event) => {
+        fractal.fractalType = event.target.value
+        // A location in one fractal is meaningless in the other, so start at the fractal's home view
+        const home = FRACTAL_HOME_VIEWS[fractal.fractalType]
+        fractal.setZoom(fxp.fromNumber(1))
+        fractal.setCenter(home.map(v => fxp.fromNumber(v)))
+        updateFractalControls()
+        redraw()
+    })
+    fractalSelect.addEventListener('keydown', (event) => {
+        event.stopPropagation()
+    })
+    mirageAlphaSlider.addEventListener('input', () => {
+        fractal.mirageAlpha = Number(mirageAlphaSlider.value)
+        updateMirageLabels()
+        redraw(false, 120)
+    })
+    mirageAlphaSlider.addEventListener('change', () => {
+        redraw()
+    })
+    mirageBetaSlider.addEventListener('input', () => {
+        fractal.mirageBeta = Number(mirageBetaSlider.value)
+        updateMirageLabels()
+        redraw(false, 120)
+    })
+    mirageBetaSlider.addEventListener('change', () => {
+        redraw()
+    })
     gpuToggle.addEventListener('change', (event) => {
         fractal.useGpu = event.target.checked
         redraw()
@@ -1028,7 +1084,24 @@ function initListeners() {
     })
 }
 
+function updateMirageLabels() {
+    mirageAlphaLabel.innerText = `Mirage α: ${fractal.mirageAlpha.toFixed(2)}`
+    mirageBetaLabel.innerText = `Mirage β: ${fractal.mirageBeta.toFixed(2)}`
+}
+
+function updateFractalControls() {
+    fractalSelect.value = fractal.fractalType
+    mirageParamsRow.hidden = fractal.fractalType !== 'mirage'
+    mirageAlphaSlider.value = fractal.mirageAlpha
+    mirageBetaSlider.value = fractal.mirageBeta
+    updateMirageLabels()
+}
+
 function reset() {
+    fractal.fractalType = 'mandelbrot'
+    fractal.mirageAlpha = MIRAGE_DEFAULT_ALPHA
+    fractal.mirageBeta = MIRAGE_DEFAULT_BETA
+    updateFractalControls()
     fractal.setZoom(fxp.fromNumber(1))
     fractal.setCenter([fxp.fromNumber(-0.5), fxp.fromNumber(0)])
     paletteSelector.setDensity(1)
@@ -1065,7 +1138,11 @@ function updatePermalink() {
         zoom: fractal.zoom,
         max_iter: fractal.max_iter,
         smooth: fractal.smooth,
+        fractal: fractal.fractalType,
         palette: palette
+    }
+    if (fractal.fractalType === 'mirage') {
+        params.mirage = {alpha: fractal.mirageAlpha, beta: fractal.mirageBeta}
     }
     p.set('params', btoa(JSON.stringify(params)))
 
@@ -1088,6 +1165,7 @@ function init() {
     onResize()
     iterationsElement.value = fractal.max_iter
     smoothToggle.checked = fractal.smooth
+    updateFractalControls()
     fractal.initPallete()
     for (let component of components) {
         component.init()
@@ -1099,6 +1177,11 @@ function init() {
 
 function initFromParams(params) {
     const p = JSON.parse(atob(params))
+    fractal.fractalType = p.fractal === 'mirage' ? 'mirage' : 'mandelbrot'
+    const alpha = Number(p.mirage && p.mirage.alpha)
+    const beta = Number(p.mirage && p.mirage.beta)
+    fractal.mirageAlpha = Number.isFinite(alpha) ? Math.min(1, Math.max(0.05, alpha)) : MIRAGE_DEFAULT_ALPHA
+    fractal.mirageBeta = Number.isFinite(beta) ? Math.min(5, Math.max(0, beta)) : MIRAGE_DEFAULT_BETA
     fractal.setZoom(fxp.fromJSON(p.zoom))
     fractal.setCenter(p.center.map(fxp.fromJSON))
     fractal.max_iter = p.max_iter
@@ -1114,6 +1197,7 @@ function initFromParams(params) {
     }
     iterationsElement.value = fractal.max_iter
     smoothToggle.checked = fractal.smooth
+    updateFractalControls()
 }
 
 class SettingsComponent {

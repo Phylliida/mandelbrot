@@ -65,6 +65,22 @@
                     <input id="gpu" class="form-check-input"  type="checkbox" role="switch"/>
                     <label for="gpu" class="form-check-labels">GPU (exp.)</label>
                 </div>
+                <div class="col col-sm-6" data-bs-toggle="tooltip" data-bs-placement="left" title="Fractal type (mirage renders on the CPU)">
+                    <select id="fractal-select" class="form-select form-select-sm">
+                        <option value="mandelbrot" selected>Mandelbrot</option>
+                        <option value="mirage">Mirage</option>
+                    </select>
+                </div>
+            </div>
+            <div id="mirage-params" class="mb-2 g-1 row" hidden>
+                <div class="col col-sm-6" data-bs-toggle="tooltip" data-bs-placement="left" title="How far each step drifts towards the mirrored square step">
+                    <label id="mirage-alpha-label" for="mirage-alpha" class="form-label">Mirage α</label>
+                    <input id="mirage-alpha" type="range" class="form-range" min="0.05" max="1" step="0.05" value="0.55"/>
+                </div>
+                <div class="col col-sm-6" data-bs-toggle="tooltip" data-bs-placement="left" title="How strongly the orbit is blended with its mirror image near the origin">
+                    <label id="mirage-beta-label" for="mirage-beta" class="form-label">Mirage β</label>
+                    <input id="mirage-beta" type="range" class="form-range" min="0" max="5" step="0.05" value="1.9"/>
+                </div>
             </div>
             <div class="mb-2 g-1 row">
                 <div class="col col-sm-6">

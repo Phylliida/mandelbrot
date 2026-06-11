@@ -23,6 +23,7 @@ export class MandelbrotPerturbationExtFloat {
         this.paramHash = null
         this.jobId = null
         this.referencePoints = []
+        this.lastZq = 0
     }
 
     process(task){
@@ -50,7 +51,7 @@ export class MandelbrotPerturbationExtFloat {
         }
     }
 
-    async calculate(values, smooth, w, h, skipTopLeft, task) {
+    calculate(values, smooth, w, h, skipTopLeft, task) {
         const stats = this.ctx.stats
         const scale = task.precision
         const bigScale = BigInt(scale)
@@ -92,38 +93,36 @@ export class MandelbrotPerturbationExtFloat {
 
                     let found = false
                     const offset = y * w + x
-                    const start = performance.now()
 
+                    const referencePoints = this.referencePoints
+                    const numRefs = referencePoints.length
                     let refIndex = head
-                    for (let ignored of this.referencePoints) {
-                        let referencePoint = this.referencePoints[refIndex]
+                    for (let attempt = 0; attempt < numRefs; attempt++) {
+                        let referencePoint = referencePoints[refIndex]
                         const refDr = referencePoint[0][0]
                         const refDi = referencePoint[0][1]
-                        const zs = referencePoint[3]
 
-                        const [iter, zq] = this.mandlebrot_perturbation(-scale, dr - refDr, di - refDi, this.max_iter, bailout, zs)
+                        const iter = this.mandlebrot_perturbation(-scale, dr - refDr, di - refDi, this.max_iter, bailout, referencePoint[3], referencePoint[4])
                         if (iter >= 0) {
-                            values[offset] = smoothen(smooth, offset, iter, zq)
+                            values[offset] = smoothen(smooth, offset, iter, this.lastZq)
                             found = true
                             stats.numberOfLowPrecisionPoints++
                             if (refIndex < head) {
                                 head--
-                                this.referencePoints[refIndex] = this.referencePoints[head]
-                                this.referencePoints[head] = referencePoint
+                                referencePoints[refIndex] = referencePoints[head]
+                                referencePoints[head] = referencePoint
                             } else if (refIndex > head) {
                                 for (let i = refIndex; i > head; i--) {
-                                    this.referencePoints[i] = this.referencePoints[i - 1]
+                                    referencePoints[i] = referencePoints[i - 1]
                                 }
-                                this.referencePoints[head] = referencePoint
+                                referencePoints[head] = referencePoint
                             }
                             break
                         }
                         stats.numberOfLowPrecisionMisses++
-                        refIndex = (refIndex + 1) % this.referencePoints.length
+                        refIndex = (refIndex + 1) % numRefs
                     }
 
-                    const end = performance.now()
-                    this.ctx.stats.timeSpendInLowPrecision += end - start
                     if (!found) {
                         const newRef = this.calculate_reference(refr, refi, dr, di, bigScale, scale, bailout)
                         values[offset] = smoothen(smooth, offset, newRef[1], newRef[2])
@@ -169,19 +168,26 @@ export class MandelbrotPerturbationExtFloat {
     }
 
     /**
-     * @param {number} dExp exp of dcr and dci
+     * Returns the iteration count (>= 0) with the squared escape radius in this.lastZq, or a negative
+     * number when the calculation could not be completed with this reference point.
+     *
+     * @param {number} dExp exp of dcr and dci (only used for debugging)
      * @param {number} dcr
      * @param {number} dci
      * @param {number} max_iter
      * @param {number} bailout
-     * @param {[number, number, number, number, number, number, number][]} zs (zr, zi, zq, zExp, zExpFactor, zEzpDeltaFactor, dExpZEzpDeltaFactor)[]
-     * @returns {[number, number]} [iter, zq]
+     * @param {Float64Array} zs flattened reference sequence with stride 6: (zr, zi, zqErrorBound, eExpFactor, eExpDeltaFactor, eExp)
+     * @param {number} numZs number of points in zs
+     * @returns {number} iter
      */
-    mandlebrot_perturbation(dExp, dcr, dci, max_iter, bailout, zs) {
-        const exponents = []
-        const guessedExponents = []
-        exponents.push(Math.max(realExp(dcr, dExp), realExp(dci, dExp)))
-        guessedExponents.push(dExp)
+    mandlebrot_perturbation(dExp, dcr, dci, max_iter, bailout, zs, numZs) {
+        const debug = this.debug === true
+        let exponents = null
+        let guessedExponents = null
+        if (debug) {
+            exponents = [Math.max(realExp(dcr, dExp), realExp(dci, dExp))]
+            guessedExponents = [dExp]
+        }
 
         // ε₀ = δ
         let ezr = dcr
@@ -191,34 +197,41 @@ export class MandelbrotPerturbationExtFloat {
         let zzq = 0
         while (zzq <= bailout) {
             if (iter++ === max_iter) {
-                return [2, 0]
+                this.lastZq = 0
+                return 2
             }
-            if (iter >= zs.length) {
-                return [-1, zzq]
+            if (iter >= numZs) {
+                this.lastZq = zzq
+                return -1
             }
 
             // Zₙ
-            const _zsvalues = zs[iter]
-            const eExpFactor = _zsvalues[3]  // 2 ** eExp
-            const eExpDeltaFactor = _zsvalues[4]  // 2 ** (eExp - newEExp)
-            ezr *= eExpDeltaFactor
-            ezi *= eExpDeltaFactor
-            dcr *= eExpDeltaFactor
-            dci *= eExpDeltaFactor
-            const eExp = _zsvalues[5]
-            exponents.push(Math.max(realExp(ezr, eExp), realExp(ezi, eExp)))
-            guessedExponents.push(eExp)
+            const base = iter * 6
+            const eExpFactor = zs[base + 3]  // 2 ** eExp
+            const eExpDeltaFactor = zs[base + 4]  // 2 ** (eExp - newEExp)
+            if (eExpDeltaFactor !== 1) {  // multiplication by 1 is exact, skipping it shortens the dependency chain
+                ezr *= eExpDeltaFactor
+                ezi *= eExpDeltaFactor
+                dcr *= eExpDeltaFactor
+                dci *= eExpDeltaFactor
+            }
+            if (debug) {
+                const eExp = zs[base + 5]
+                exponents.push(Math.max(realExp(ezr, eExp), realExp(ezi, eExp)))
+                guessedExponents.push(eExp)
+            }
 
-            const zr = _zsvalues[0]
-            const zi = _zsvalues[1]
-            const zqErrorBound = _zsvalues[2]
+            const zr = zs[base]
+            const zi = zs[base + 1]
+            const zqErrorBound = zs[base + 2]
 
             // Z'ₙ = Zₙ + εₙ
             const zzr = zr + ezr * eExpFactor
             const zzi = zi + ezi * eExpFactor
             zzq = zzr * zzr + zzi * zzi
             if (zzq < zqErrorBound) {
-                return [-1, 0]
+                this.lastZq = 0
+                return -1
             }
 
             // εₙ₊₁ = 2·zₙ·εₙ + εₙ² + δ = (2·zₙ + εₙ)·εₙ + δ
@@ -229,11 +242,12 @@ export class MandelbrotPerturbationExtFloat {
             ezr = _ezr + dcr
             ezi = _ezi + dci
         }
-        if (this.debug) {
+        if (debug) {
             console.log(exponents.join(","))
             console.log(guessedExponents.join(","))
         }
-        return [iter + 4, zzq]
+        this.lastZq = zzq
+        return iter + 4
     }
 
     /**
@@ -244,7 +258,8 @@ export class MandelbrotPerturbationExtFloat {
      * @param {BigInt} bigScale
      * @param {number} scale
      * @param {number} bailout
-     * @returns {[[number, number], number, number, [number, number, number, number, number][]]} ((rr, ri), iter, zq, (zr, zi, zqErrorBound, eExpFactor, eEzpDeltaFactor)[])
+     * @returns {[[number, number], number, number, Float64Array, number]} ((rr, ri), iter, zq, zs, numZs) where zs
+     * is the flattened reference sequence with stride 6: (zr, zi, zqErrorBound, eExpFactor, eExpDeltaFactor, eExp)
      */
     calculate_reference(refr, refi, dr, di, bigScale, scale, bailout) {
         const start = performance.now()
@@ -254,19 +269,24 @@ export class MandelbrotPerturbationExtFloat {
         let lastExp = -scale
 
         const iterations = seq.length
-        const zs = seq.map(([zr, zi, zq], idx) => {
+        const zs = new Float64Array(iterations * 6)
+        for (let idx = 0, base = 0; idx < iterations; idx++, base += 6) {
             // No mathematical proof whatsoever! It may be impossible to 'predict' the exponent of epsilon good enough,
             // if it drifts more than approx. 1000 from the actual exp of the error, the results may become incorrect
             const eExp = Math.round(Math.pow(idx / iterations, 1.75) * scale - scale)
-            const eExpDeltaFactor = 2 ** (lastExp-eExp)
-            const eExpFactor = 2 ** eExp
+            const point = seq[idx]
+            zs[base] = point[0]
+            zs[base + 1] = point[1]
+            zs[base + 2] = point[2]
+            zs[base + 3] = 2 ** eExp
+            zs[base + 4] = 2 ** (lastExp - eExp)
+            zs[base + 5] = eExp
             lastExp = eExp
-            return [zr, zi, zq, eExpFactor, eExpDeltaFactor, eExp]
-        })
+        }
         const end = performance.now()
         this.ctx.stats.timeSpendInHighPrecision += end - start
         this.ctx.stats.numberOfHighPrecisionPoints++
-        return [[dr, di], iter, zq, zs]
+        return [[dr, di], iter, zq, zs, iterations]
     }
 
     /**
@@ -280,6 +300,15 @@ export class MandelbrotPerturbationExtFloat {
      */
     mandelbrot_high_precision(re, im, max_iter, bailout, bigScale, scale) {
         const scale_1 = bigScale - 1n
+        // Fast fixed-point to float conversion: |z| is bounded by the bailout so the top ~500 bits
+        // (an exact power-of-two shift) carry all the precision a float64 can hold. Only (near-)zero
+        // values, which have fewer significant bits, need the exact but much slower conversion.
+        const preShift = bigScale - 500n
+        const preShiftFactor = 2 ** -500
+        const toFloat = (value) => {
+            const top = Number(value >> preShift)
+            return (top >= 9007199254740992 || top <= -9007199254740992) ? top * preShiftFactor : fxp.toNumber(value, scale)
+        }
         let zr = 0n
         let zi = 0n
         let iter = -1
@@ -295,15 +324,15 @@ export class MandelbrotPerturbationExtFloat {
             zr = zrq - ziq + re
             zrq = (zr * zr) >> bigScale
             ziq = (zi * zi) >> bigScale
-            const z_real = fxp.toNumber(zr, scale)
-            const z_imag = fxp.toNumber(zi, scale)
+            const z_real = toFloat(zr)
+            const z_imag = toFloat(zi)
             zq = z_real * z_real + z_imag * z_imag
             seq.push([z_real, z_imag, zq * 0.000001])
         }
         zi = (zr * zi >> scale_1) + im
         zr = zrq - ziq + re
-        const z_real = fxp.toNumber(zr, scale)
-        const z_imag = fxp.toNumber(zi, scale)
+        const z_real = toFloat(zr)
+        const z_imag = toFloat(zi)
         seq.push([z_real, z_imag, z_real * z_real + z_imag * z_imag])
         return [iter + 4, zq, seq]
     }
