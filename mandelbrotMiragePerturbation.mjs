@@ -95,8 +95,12 @@ export class MandelbrotMiragePerturbation {
             if (this.ctx.shouldStop()) return
         }
 
-        // We queue reference points in LRU order, the head pointing to the least recently successfully used reference point
-        let head = this.referencePoints.length - 1
+        // The mirage iteration can be strongly chaotic, so reconstructing the same pixel from
+        // different reference points gives noticeably different escape iterations. Retrying
+        // until some reference "works" would select for early escapes and visibly bias the
+        // image. Instead the references are kept sorted by orbit length and tried longest
+        // first: when the pixel outlives the longest reference a shorter one can never
+        // legitimately complete it, so an exact reference is computed for the pixel instead.
         for (let y = 0; y < h; y++) {
             const di = (task.yOffset + y) / task.frameHeight * cHeight
             const skipLeft = skipTopLeft && y % 2 === 0
@@ -112,9 +116,8 @@ export class MandelbrotMiragePerturbation {
 
                     const referencePoints = this.referencePoints
                     const numRefs = referencePoints.length
-                    let refIndex = head
-                    for (let attempt = 0; attempt < numRefs; attempt++) {
-                        let referencePoint = referencePoints[refIndex]
+                    for (let refIndex = 0; refIndex < numRefs; refIndex++) {
+                        const referencePoint = referencePoints[refIndex]
                         const refDr = referencePoint[0][0]
                         const refDi = referencePoint[0][1]
 
@@ -123,28 +126,23 @@ export class MandelbrotMiragePerturbation {
                             values[offset] = smoothen(smooth, offset, iter, this.lastZq)
                             found = true
                             stats.numberOfLowPrecisionPoints++
-                            if (refIndex < head) {
-                                head--
-                                referencePoints[refIndex] = referencePoints[head]
-                                referencePoints[head] = referencePoint
-                            } else if (refIndex > head) {
-                                for (let i = refIndex; i > head; i--) {
-                                    referencePoints[i] = referencePoints[i - 1]
-                                }
-                                referencePoints[head] = referencePoint
-                            }
                             break
                         }
                         stats.numberOfLowPrecisionMisses++
-                        refIndex = (refIndex + 1) % numRefs
+                        if (iter === -2) {
+                            break // pixel outlives this (longest remaining) reference
+                        }
                     }
 
                     if (!found) {
                         const newRef = this.calculate_reference(refr, refi, dr, di, bigScale, scaleFactor, bigBailout)
                         values[offset] = smoothen(smooth, offset, newRef[1], Number(newRef[2]) / scaleFactor)
-                        this.referencePoints.unshift(newRef)
-                        this.referencePoints[0] = this.referencePoints[head]
-                        this.referencePoints[head] = newRef
+                        const referencePoints = this.referencePoints
+                        let pos = 0
+                        while (pos < referencePoints.length && referencePoints[pos][4] >= newRef[4]) {
+                            pos++
+                        }
+                        referencePoints.splice(pos, 0, newRef)
                         if (this.ctx.shouldStop()) return
                     }
                 }
@@ -184,8 +182,9 @@ export class MandelbrotMiragePerturbation {
     }
 
     /**
-     * Returns the iteration count (>= 0) with the squared escape radius in this.lastZq, or a negative
-     * number when the calculation could not be completed with this reference point.
+     * Returns the iteration count (>= 0) with the squared escape radius in this.lastZq.
+     * Returns -2 when the reference orbit is too short for this pixel and -1 when precision
+     * was lost (glitch), in which case another reference point may still work.
      *
      * @param {number} dcr
      * @param {number} dci
@@ -215,7 +214,7 @@ export class MandelbrotMiragePerturbation {
             }
             if (iter >= numZs) {
                 this.lastZq = zzq
-                return -1
+                return -2
             }
 
             // Zₙ
