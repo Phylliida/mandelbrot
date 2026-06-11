@@ -262,3 +262,8 @@ footer {
 #footer.fullscreen {
     display: none;
 }
+
+.mirage-value-input {
+    width: 5.5em;
+    text-align: right;
+}

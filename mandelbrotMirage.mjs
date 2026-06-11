@@ -22,14 +22,19 @@ export const DEFAULT_BETA = 1.9
 
 /**
  * The relaxation term (1−α)·zₙ can pull a point well outside |z| = 2 back towards the origin,
- * so unlike the plain Mandelbrot iteration a small bailout would misclassify points. Once
- * α·0.85·|z|² outweighs the (2−α)·|z| drift plus the |c| offset the orbit grows monotonically,
- * which this radius guarantees for α ≥ 0.05, β ≤ 5 and |c| ≤ 9 (the set fits in |c| ≤ 9 with a
- * wide margin). For α ≥ 0.5, including the default 0.55, this keeps the bailout at 128.
+ * so unlike the plain Mandelbrot iteration a small bailout would misclassify points. The orbit
+ * grows monotonically once α·0.85·|z|² outweighs the (2−α)·|z| drift plus the α·|c| offset.
+ * The three terms guarantee that for, respectively, strong damping (small α, the extra margin
+ * beyond t = 19 covers manually entered α below the slider range), a strong or negative mirror
+ * blend (the (1−2s)² factor must stay close to 1 at the escape radius), and views panned far
+ * outside the set (cMax bounds |c| over the rendered frame; pass the same frame-wide value to
+ * every task so all tiles use the same bailout). For the default α = 0.55, β = 1.9 and any
+ * view near the set this keeps the historical bailout of 128.
  */
-export function bailoutFor(alpha) {
-    const r = 2.2 * (1 - alpha) / alpha + 9
-    return Math.max(128, r * r)
+export function bailoutFor(alpha, beta = 0, cMax = 0) {
+    const t = (1 - alpha) / alpha
+    const r = 9 + 2.2 * t + 0.45 * Math.max(0, t - 19)
+    return Math.max(128, r * r, 25.8 * Math.abs(beta) - 1, 12 * cMax)
 }
 
 export class MandelbrotMirage {
@@ -45,12 +50,15 @@ export class MandelbrotMirage {
         this.max_iter = task.maxIter
         this.alpha = task.mirageAlpha ?? DEFAULT_ALPHA
         this.beta = task.mirageBeta ?? DEFAULT_BETA
-        this.bailout = bailoutFor(this.alpha)
         const w = task.w
         const h = task.h
 
         const frameTopLeftFloat = task.frameTopLeft.map(fixed => fixed.toNumber())
         const frameBottomRightFloat = task.frameBottomRight.map(fixed => fixed.toNumber())
+        const cMax = Math.hypot(
+            Math.max(Math.abs(frameTopLeftFloat[0]), Math.abs(frameBottomRightFloat[0])),
+            Math.max(Math.abs(frameTopLeftFloat[1]), Math.abs(frameBottomRightFloat[1])))
+        this.bailout = bailoutFor(this.alpha, this.beta, cMax)
         const topLeftFloat = [
             frameTopLeftFloat[0] + task.xOffset * (frameBottomRightFloat[0] - frameTopLeftFloat[0]) / task.frameWidth,
             frameTopLeftFloat[1] + task.yOffset * (frameBottomRightFloat[1] - frameTopLeftFloat[1]) / task.frameHeight

@@ -41,7 +41,6 @@ export class MandelbrotMiragePerturbation {
         this.max_iter = task.maxIter
         this.alpha = task.mirageAlpha ?? DEFAULT_ALPHA
         this.beta = task.mirageBeta ?? DEFAULT_BETA
-        this.bailout = bailoutFor(this.alpha)
         const w = task.w
         const h = task.h
 
@@ -81,7 +80,11 @@ export class MandelbrotMiragePerturbation {
         const refr = rmin.bigInt
         const refi = imin.bigInt
 
-        const bailout = this.bailout
+        const cMax = Math.hypot(
+            Math.max(Math.abs(rmin.toNumber()), Math.abs(rmax.toNumber())),
+            Math.max(Math.abs(imin.toNumber()), Math.abs(imax.toNumber())))
+        const bailout = bailoutFor(this.alpha, this.beta, cMax)
+        this.bailout = bailout
         const bigBailout = BigInt(Math.ceil(bailout)) << bigScale
 
         this.updateCache(task, cWidth, cHeight, scaleFactor)

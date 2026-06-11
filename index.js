@@ -25,6 +25,12 @@ const FRACTAL_HOME_VIEWS = {
 }
 const MIRAGE_DEFAULT_ALPHA = 0.55
 const MIRAGE_DEFAULT_BETA = 1.9
+// The sliders cover the comfortable range, values can be entered manually within these bounds.
+// Beyond them the iteration explodes so quickly that float64 and the smooth coloring break down.
+const MIRAGE_ALPHA_MIN = 0.001
+const MIRAGE_ALPHA_MAX = 4
+const MIRAGE_BETA_MIN = -20
+const MIRAGE_BETA_MAX = 20
 
 class MyWorker {
     constructor(taskqueue, resulthandler) {
@@ -932,8 +938,8 @@ const fractalSelect = document.getElementById('fractal-select')
 const mirageParamsRow = document.getElementById('mirage-params')
 const mirageAlphaSlider = document.getElementById('mirage-alpha')
 const mirageBetaSlider = document.getElementById('mirage-beta')
-const mirageAlphaLabel = document.getElementById('mirage-alpha-label')
-const mirageBetaLabel = document.getElementById('mirage-beta-label')
+const mirageAlphaInput = document.getElementById('mirage-alpha-value')
+const mirageBetaInput = document.getElementById('mirage-beta-value')
 const resetElement = document.getElementById('reset')
 const fullResToggle = document.getElementById('fullres')
 const gpuToggle = document.getElementById('gpu')
@@ -1047,7 +1053,7 @@ function initListeners() {
     })
     mirageAlphaSlider.addEventListener('input', () => {
         fractal.mirageAlpha = Number(mirageAlphaSlider.value)
-        updateMirageLabels()
+        mirageAlphaInput.value = fractal.mirageAlpha
         redraw(false, 120)
     })
     mirageAlphaSlider.addEventListener('change', () => {
@@ -1055,12 +1061,27 @@ function initListeners() {
     })
     mirageBetaSlider.addEventListener('input', () => {
         fractal.mirageBeta = Number(mirageBetaSlider.value)
-        updateMirageLabels()
+        mirageBetaInput.value = fractal.mirageBeta
         redraw(false, 120)
     })
     mirageBetaSlider.addEventListener('change', () => {
         redraw()
     })
+    mirageAlphaInput.addEventListener('change', () => {
+        fractal.mirageAlpha = clampMirageValue(Number(mirageAlphaInput.value), MIRAGE_ALPHA_MIN, MIRAGE_ALPHA_MAX, fractal.mirageAlpha)
+        syncMirageInputs()
+        redraw()
+    })
+    mirageBetaInput.addEventListener('change', () => {
+        fractal.mirageBeta = clampMirageValue(Number(mirageBetaInput.value), MIRAGE_BETA_MIN, MIRAGE_BETA_MAX, fractal.mirageBeta)
+        syncMirageInputs()
+        redraw()
+    })
+    for (const input of [mirageAlphaInput, mirageBetaInput]) {
+        input.addEventListener('keydown', (event) => {
+            event.stopPropagation()
+        })
+    }
     gpuToggle.addEventListener('change', (event) => {
         fractal.useGpu = event.target.checked
         redraw()
@@ -1084,17 +1105,22 @@ function initListeners() {
     })
 }
 
-function updateMirageLabels() {
-    mirageAlphaLabel.innerText = `Mirage α: ${fractal.mirageAlpha.toFixed(2)}`
-    mirageBetaLabel.innerText = `Mirage β: ${fractal.mirageBeta.toFixed(2)}`
+function clampMirageValue(value, min, max, fallback) {
+    return Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback
+}
+
+function syncMirageInputs() {
+    // the slider clamps itself to its own range when the value was entered outside of it
+    mirageAlphaSlider.value = fractal.mirageAlpha
+    mirageBetaSlider.value = fractal.mirageBeta
+    mirageAlphaInput.value = fractal.mirageAlpha
+    mirageBetaInput.value = fractal.mirageBeta
 }
 
 function updateFractalControls() {
     fractalSelect.value = fractal.fractalType
     mirageParamsRow.hidden = fractal.fractalType !== 'mirage'
-    mirageAlphaSlider.value = fractal.mirageAlpha
-    mirageBetaSlider.value = fractal.mirageBeta
-    updateMirageLabels()
+    syncMirageInputs()
 }
 
 function reset() {
@@ -1178,10 +1204,8 @@ function init() {
 function initFromParams(params) {
     const p = JSON.parse(atob(params))
     fractal.fractalType = p.fractal === 'mirage' ? 'mirage' : 'mandelbrot'
-    const alpha = Number(p.mirage && p.mirage.alpha)
-    const beta = Number(p.mirage && p.mirage.beta)
-    fractal.mirageAlpha = Number.isFinite(alpha) ? Math.min(1, Math.max(0.05, alpha)) : MIRAGE_DEFAULT_ALPHA
-    fractal.mirageBeta = Number.isFinite(beta) ? Math.min(5, Math.max(0, beta)) : MIRAGE_DEFAULT_BETA
+    fractal.mirageAlpha = clampMirageValue(Number(p.mirage && p.mirage.alpha), MIRAGE_ALPHA_MIN, MIRAGE_ALPHA_MAX, MIRAGE_DEFAULT_ALPHA)
+    fractal.mirageBeta = clampMirageValue(Number(p.mirage && p.mirage.beta), MIRAGE_BETA_MIN, MIRAGE_BETA_MAX, MIRAGE_DEFAULT_BETA)
     fractal.setZoom(fxp.fromJSON(p.zoom))
     fractal.setCenter(p.center.map(fxp.fromJSON))
     fractal.max_iter = p.max_iter
