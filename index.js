@@ -6,6 +6,7 @@ import * as palette from './palette.mjs'
 import * as favorites from './favorites.js'
 import * as mgpu from './mandelbrotWebGPU.mjs'
 import * as pngMeta from './pngMetadata.mjs'
+import {ABS_VARIANTS} from './mandelbrotAbsFamily.mjs'
 import {WorkerContext} from "./workerContext.mjs";
 
 const SQUARE_SIZE = 32 // must be even or -1 for full-frame tasks
@@ -26,8 +27,10 @@ const FRACTAL_HOME_VIEWS = {
     burningship: [-0.45, -0.4],
     tricorn: [-0.25, 0],
     phoenix: [-0.3, 0],
+    absfamily: [-0.5, 0],
     mirage: [-5.9, 0],
 }
+const ABS_DEFAULT_VARIANT = 'celtic'
 const MULTIBROT_DEFAULT_DEGREE = 3
 const PHOENIX_DEFAULT_Q = -0.5
 const PHOENIX_Q_MIN = -2
@@ -92,6 +95,7 @@ class Mandelbrot {
         this.mirageBeta = MIRAGE_DEFAULT_BETA
         this.multibrotDegree = MULTIBROT_DEFAULT_DEGREE
         this.phoenixQ = PHOENIX_DEFAULT_Q
+        this.absVariant = ABS_DEFAULT_VARIANT
         this.juliaMode = false
         this.juliaSeed = null
         this.preJuliaView = null
@@ -228,7 +232,7 @@ class Mandelbrot {
             const w = buffer.width
             const h = buffer.height
             const juliaHash = this.juliaMode ? `J${this.juliaSeed[0].bigInt}:${this.juliaSeed[1].bigInt}` : 'M'
-            const paramHash = `${this.max_iter}-${this.smooth}-${this.fractalType}-${this.mirageAlpha}-${this.mirageBeta}-${this.multibrotDegree}-${this.phoenixQ}-${juliaHash}`
+            const paramHash = `${this.max_iter}-${this.smooth}-${this.fractalType}-${this.mirageAlpha}-${this.mirageBeta}-${this.multibrotDegree}-${this.phoenixQ}-${this.absVariant}-${juliaHash}`
 
             const frameTopLeft = this.canvas2complex(0, 0)
             // We need to adjust for the case that the width or height is not dividable by the pixel size
@@ -271,6 +275,7 @@ class Mandelbrot {
                         mirageBeta: this.mirageBeta,
                         multibrotDegree: this.multibrotDegree,
                         phoenixQ: this.phoenixQ,
+                        absVariant: this.absVariant,
                         julia: this.juliaMode,
                         juliaSeed: this.juliaSeed
                     }
@@ -955,6 +960,8 @@ const fullScreenButton = document.getElementById('fullscreen')
 const smoothToggle = document.getElementById('smooth')
 const fractalSelect = document.getElementById('fractal-select')
 const juliaToggle = document.getElementById('julia')
+const absParamsRow = document.getElementById('abs-params')
+const absVariantSelect = document.getElementById('abs-variant')
 const multibrotParamsRow = document.getElementById('multibrot-params')
 const multibrotDegreeSlider = document.getElementById('multibrot-degree')
 const multibrotDegreeLabel = document.getElementById('multibrot-degree-label')
@@ -1100,6 +1107,10 @@ function initListeners() {
     fractalSelect.addEventListener('keydown', (event) => {
         event.stopPropagation()
     })
+    absVariantSelect.addEventListener('change', (event) => {
+        fractal.absVariant = ABS_VARIANTS[event.target.value] ? event.target.value : ABS_DEFAULT_VARIANT
+        redraw()
+    })
     multibrotDegreeSlider.addEventListener('input', () => {
         fractal.multibrotDegree = Math.round(Number(multibrotDegreeSlider.value))
         multibrotDegreeLabel.innerText = `Degree: ${fractal.multibrotDegree}`
@@ -1209,7 +1220,9 @@ function updateFractalControls() {
     mirageParamsRow.hidden = fractal.fractalType !== 'mirage'
     multibrotParamsRow.hidden = fractal.fractalType !== 'multibrot'
     phoenixParamsRow.hidden = fractal.fractalType !== 'phoenix'
+    absParamsRow.hidden = fractal.fractalType !== 'absfamily'
     juliaToggle.checked = fractal.juliaMode
+    absVariantSelect.value = fractal.absVariant
     multibrotDegreeSlider.value = fractal.multibrotDegree
     multibrotDegreeLabel.innerText = `Degree: ${fractal.multibrotDegree}`
     phoenixQSlider.value = fractal.phoenixQ
@@ -1229,6 +1242,7 @@ function reset() {
     fractal.mirageBeta = MIRAGE_DEFAULT_BETA
     fractal.multibrotDegree = MULTIBROT_DEFAULT_DEGREE
     fractal.phoenixQ = PHOENIX_DEFAULT_Q
+    fractal.absVariant = ABS_DEFAULT_VARIANT
     exitJuliaMode()
     updateFractalControls()
     fractal.setZoom(fxp.fromNumber(1))
@@ -1278,6 +1292,9 @@ function encodeParams() {
     }
     if (fractal.fractalType === 'phoenix') {
         params.phoenix = {q: fractal.phoenixQ}
+    }
+    if (fractal.fractalType === 'absfamily') {
+        params.absvariant = fractal.absVariant
     }
     if (fractal.juliaMode) {
         params.julia = fractal.juliaSeed
@@ -1375,6 +1392,7 @@ function initFromParams(params) {
     fractal.mirageBeta = clampMirageValue(Number(p.mirage && p.mirage.beta), MIRAGE_BETA_MIN, MIRAGE_BETA_MAX, MIRAGE_DEFAULT_BETA)
     fractal.multibrotDegree = Math.round(clampMirageValue(Number(p.multibrot && p.multibrot.degree), 2, 8, MULTIBROT_DEFAULT_DEGREE))
     fractal.phoenixQ = clampMirageValue(Number(p.phoenix && p.phoenix.q), PHOENIX_Q_MIN, PHOENIX_Q_MAX, PHOENIX_DEFAULT_Q)
+    fractal.absVariant = ABS_VARIANTS[p.absvariant] ? p.absvariant : ABS_DEFAULT_VARIANT
     if (p.julia) {
         fractal.juliaMode = true
         fractal.juliaSeed = p.julia.map(fxp.fromJSON)
