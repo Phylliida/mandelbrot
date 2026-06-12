@@ -18,9 +18,11 @@ const MAX_PIXEL_SIZE = 16
 
 const MIN_ZOOM = fxp.fromNumber(1)
 
-// The mirage set lives in a different part of the complex plane than the mandelbrot set
+// Each fractal lives in its own part of the complex plane
 const FRACTAL_HOME_VIEWS = {
     mandelbrot: [-0.5, 0],
+    burningship: [-0.45, -0.4],
+    tricorn: [-0.25, 0],
     mirage: [-5.9, 0],
 }
 const MIRAGE_DEFAULT_ALPHA = 0.55
@@ -768,9 +770,9 @@ function zoomWithClicks(clicks, cooldown) {
 function zoomWithFactor(factor, cooldown) {
     const lowerBound = MIN_ZOOM.withScale(fractal.precision)
     if (fractal.zoom.leq(lowerBound) && factor < 1) return
-    // The mirage perturbation has no extended-float implementation, so cap the zoom where
-    // the regular perturbation algorithm runs out of float64 exponent range (about 1e300)
-    if (fractal.fractalType === 'mirage' && factor > 1 && fractal.requiredPrecision > 1000) return
+    // Only mandelbrot has an extended-float implementation, the other fractals cap the zoom
+    // where the regular perturbation algorithm runs out of float64 exponent range (about 1e300)
+    if (fractal.fractalType !== 'mandelbrot' && factor > 1 && fractal.requiredPrecision > 1000) return
     let bigFactor = fxp.fromNumber(factor, fractal.precision);
     const ptr = fractal.canvas2complex(lastX, lastY)
     fractal.setCenter(ptr)
@@ -1203,7 +1205,7 @@ function init() {
 
 function initFromParams(params) {
     const p = JSON.parse(atob(params))
-    fractal.fractalType = p.fractal === 'mirage' ? 'mirage' : 'mandelbrot'
+    fractal.fractalType = FRACTAL_HOME_VIEWS[p.fractal] ? p.fractal : 'mandelbrot'
     fractal.mirageAlpha = clampMirageValue(Number(p.mirage && p.mirage.alpha), MIRAGE_ALPHA_MIN, MIRAGE_ALPHA_MAX, MIRAGE_DEFAULT_ALPHA)
     fractal.mirageBeta = clampMirageValue(Number(p.mirage && p.mirage.beta), MIRAGE_BETA_MIN, MIRAGE_BETA_MAX, MIRAGE_DEFAULT_BETA)
     fractal.setZoom(fxp.fromJSON(p.zoom))
