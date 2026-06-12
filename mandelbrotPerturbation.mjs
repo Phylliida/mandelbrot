@@ -56,8 +56,18 @@ export class MandelbrotPerturbation {
         const refr = rmin.bigInt
         const refi = imin.bigInt
 
-        const bailout = smooth ? 128 : 4
-        const bigBailout = BigInt(bailout) << bigScale
+        this.julia = task.julia === true
+        let bailout
+        if (this.julia) {
+            const seed0 = task.juliaSeed[0].withScale(scale)
+            const seed1 = task.juliaSeed[1].withScale(scale)
+            this.juliaRFx = seed0.bigInt
+            this.juliaIFx = seed1.bigInt
+            bailout = Math.max(128, 2 * Math.hypot(seed0.toNumber(), seed1.toNumber()) + 16)
+        } else {
+            bailout = smooth ? 128 : 4
+        }
+        const bigBailout = BigInt(Math.ceil(bailout)) << bigScale
 
         this.updateCache(task, cWidth, cHeight, scaleFactor)
 
@@ -93,7 +103,11 @@ export class MandelbrotPerturbation {
                         const refDr = referencePoint[0][0]
                         const refDi = referencePoint[0][1]
 
-                        const iter = this.mandlebrot_perturbation(dr - refDr, di - refDi, this.max_iter, bailout, referencePoint[3], referencePoint[4])
+                        const dcr = dr - refDr
+                        const dci = di - refDi
+                        const iter = this.julia
+                            ? this.mandlebrot_perturbation(dcr, dci, 0, 0, this.max_iter, bailout, referencePoint[3], referencePoint[4])
+                            : this.mandlebrot_perturbation(dcr, dci, dcr, dci, this.max_iter, bailout, referencePoint[3], referencePoint[4])
                         if (iter >= 0) {
                             values[offset] = smoothen(smooth, offset, iter, this.lastZq)
                             found = true
@@ -162,18 +176,20 @@ export class MandelbrotPerturbation {
      * Returns the iteration count (>= 0) with the squared escape radius in this.lastZq, or a negative
      * number when the calculation could not be completed with this reference point.
      *
-     * @param {number} dcr
-     * @param {number} dci
+     * @param {number} e0r initial perturbation (the pixel delta in both modes)
+     * @param {number} e0i
+     * @param {number} adr additive per-step term (the pixel delta in mandelbrot mode, 0 in julia mode)
+     * @param {number} adi
      * @param {number} max_iter
      * @param {number} bailout
      * @param {Float64Array} zs flattened reference sequence with stride 3: (zr, zi, zqErrorBound)
      * @param {number} numZs number of points in zs
      * @returns {number} iter
      */
-    mandlebrot_perturbation(dcr, dci, max_iter, bailout, zs, numZs) {
+    mandlebrot_perturbation(e0r, e0i, adr, adi, max_iter, bailout, zs, numZs) {
         // ε₀ = δ
-        let ezr = dcr
-        let ezi = dci
+        let ezr = e0r
+        let ezi = e0i
 
         let iter = -1
         let zzq = 0
@@ -207,8 +223,8 @@ export class MandelbrotPerturbation {
             const zi_ezi_2 = zi + zzi
             const _ezr = zr_ezr_2 * ezr - zi_ezi_2 * ezi
             const _ezi = zr_ezr_2 * ezi + zi_ezi_2 * ezr
-            ezr = _ezr + dcr
-            ezi = _ezi + dci
+            ezr = _ezr + adr
+            ezi = _ezi + adi
         }
         this.lastZq = zzq
         return iter + 4
@@ -229,7 +245,9 @@ export class MandelbrotPerturbation {
         const start = performance.now()
         const rr = refr + BigInt(Math.round(dr * scaleFactor))
         const ri = refi + BigInt(Math.round(di * scaleFactor))
-        const [iter, zq, seq] = this.mandelbrot_high_precision(rr, ri, this.max_iter, bailout, bigScale)
+        const [iter, zq, seq] = this.julia
+            ? this.mandelbrot_high_precision(rr, ri, this.juliaRFx, this.juliaIFx, this.max_iter, bailout, bigScale, true)
+            : this.mandelbrot_high_precision(0n, 0n, rr, ri, this.max_iter, bailout, bigScale, false)
         const iterations = seq.length
         const zs = new Float64Array(iterations * 3)
         for (let idx = 0, base = 0; idx < iterations; idx++, base += 3) {
@@ -247,36 +265,38 @@ export class MandelbrotPerturbation {
     }
 
     /**
-     * @param {BigInt} re
-     * @param {BigInt} im
-     * @param {number} max_iter
-     * @param {BigInt} bailout
-     * @param {BigInt} scale
+     * Iterates from z₀ = (z0r, z0i) with the fixed additive constant (addr, addi). Mandelbrot
+     * mode passes z₀ = 0 with the pixel as constant, julia mode passes the pixel as z₀ with
+     * the seed as constant and includes z₀ as the first sequence entry.
+     *
      * @returns {[number, BigInt, [BigInt, BigInt][]]} [iterations, zq, sequence] where sequence is a list of [zr, zi] points
      */
-    mandelbrot_high_precision(re, im, max_iter, bailout, scale) {
+    mandelbrot_high_precision(z0r, z0i, addr, addi, max_iter, bailout, scale, includeZ0) {
         const scale_1 = scale - 1n
-        let zr = 0n
-        let zi = 0n
+        let zr = z0r
+        let zi = z0i
         let iter = -1
-        let zrq = 0n
-        let ziq = 0n
-        let zq = 0n
+        let zrq = (zr * zr) >> scale
+        let ziq = (zi * zi) >> scale
+        let zq = includeZ0 ? zrq + ziq : 0n
         const seq = []
+        if (includeZ0) {
+            seq.push([zr, zi])
+        }
         while (zq <= bailout) {
             if (iter++ === max_iter) {
                 return [2, 0n, seq]
             }
-            zi = (zr * zi >> scale_1) + im
-            zr = zrq - ziq + re
+            zi = (zr * zi >> scale_1) + addi
+            zr = zrq - ziq + addr
             seq.push([zr, zi])
             zrq = (zr * zr) >> scale
             ziq = (zi * zi) >> scale
             zq = zrq + ziq
         }
-        zi = (zr * zi >> scale_1) + im
-        zr = zrq - ziq + re
+        zi = (zr * zi >> scale_1) + addi
+        zr = zrq - ziq + addr
         seq.push([zr, zi])
-        return [iter + 4, zq, seq]
+        return [includeZ0 ? iter + 5 : iter + 4, zq, seq]
     }
 }

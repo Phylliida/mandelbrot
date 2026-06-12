@@ -80,10 +80,21 @@ export class MandelbrotMiragePerturbation {
         const refr = rmin.bigInt
         const refi = imin.bigInt
 
-        const cMax = Math.hypot(
-            Math.max(Math.abs(rmin.toNumber()), Math.abs(rmax.toNumber())),
-            Math.max(Math.abs(imin.toNumber()), Math.abs(imax.toNumber())))
-        const bailout = bailoutFor(this.alpha, this.beta, cMax)
+        this.julia = task.julia === true
+        let bailout
+        if (this.julia) {
+            const seed0 = task.juliaSeed[0].withScale(scale)
+            const seed1 = task.juliaSeed[1].withScale(scale)
+            this.juliaRFx = seed0.bigInt
+            this.juliaIFx = seed1.bigInt
+            // in julia mode the fixed seed is the only c that occurs
+            bailout = bailoutFor(this.alpha, this.beta, Math.hypot(seed0.toNumber(), seed1.toNumber()))
+        } else {
+            const cMax = Math.hypot(
+                Math.max(Math.abs(rmin.toNumber()), Math.abs(rmax.toNumber())),
+                Math.max(Math.abs(imin.toNumber()), Math.abs(imax.toNumber())))
+            bailout = bailoutFor(this.alpha, this.beta, cMax)
+        }
         this.bailout = bailout
         const bigBailout = BigInt(Math.ceil(bailout)) << bigScale
 
@@ -124,7 +135,14 @@ export class MandelbrotMiragePerturbation {
                         const refDr = referencePoint[0][0]
                         const refDi = referencePoint[0][1]
 
-                        const iter = this.mirage_perturbation(dr - refDr, di - refDi, this.max_iter, bailout, referencePoint[3], referencePoint[4])
+                        const dcr = dr - refDr
+                        const dci = di - refDi
+                        // in mirage mode the first step turns z₀ = 0 into α·c, so ε starts at α·δ
+                        // which is also the per-step additive term. In julia mode z₀ is the pixel
+                        // itself, so ε starts at δ and nothing is re-added.
+                        const iter = this.julia
+                            ? this.mirage_perturbation(dcr, dci, 0, 0, this.max_iter, bailout, referencePoint[3], referencePoint[4])
+                            : this.mirage_perturbation(this.alpha * dcr, this.alpha * dci, this.alpha * dcr, this.alpha * dci, this.max_iter, bailout, referencePoint[3], referencePoint[4])
                         if (iter >= 0) {
                             values[offset] = smoothen(smooth, offset, iter, this.lastZq)
                             found = true
@@ -197,16 +215,12 @@ export class MandelbrotMiragePerturbation {
      * @param {number} numZs number of points in zs
      * @returns {number} iter
      */
-    mirage_perturbation(dcr, dci, max_iter, bailout, zs, numZs) {
+    mirage_perturbation(e0r, e0i, adr, adi, max_iter, bailout, zs, numZs) {
         const alpha = this.alpha
         const a1 = 1 - alpha
         const beta2 = 2 * this.beta
-        // the first mirage step turns z₀ = 0 into α·c, so ε starts at α·δ, which is also the
-        // additive term of every following step
-        const adr = alpha * dcr
-        const adi = alpha * dci
-        let u = adr
-        let v = adi
+        let u = e0r
+        let v = e0i
 
         let iter = -1
         let zzq = 0
@@ -266,7 +280,9 @@ export class MandelbrotMiragePerturbation {
         const start = performance.now()
         const rr = refr + BigInt(Math.round(dr * scaleFactor))
         const ri = refi + BigInt(Math.round(di * scaleFactor))
-        const [iter, zq, seq] = this.mirage_high_precision(rr, ri, this.max_iter, bailout, bigScale)
+        const [iter, zq, seq] = this.julia
+            ? this.mirage_high_precision(rr, ri, this.juliaRFx, this.juliaIFx, this.max_iter, bailout, bigScale, true)
+            : this.mirage_high_precision(0n, 0n, rr, ri, this.max_iter, bailout, bigScale, false)
         const beta2 = 2 * this.beta
         const iterations = seq.length
         const zs = new Float64Array(iterations * 5)
@@ -299,18 +315,21 @@ export class MandelbrotMiragePerturbation {
      * @param {BigInt} scale
      * @returns {[number, BigInt, [BigInt, BigInt][]]} [iterations, zq, sequence] where sequence is a list of [X, Y] points
      */
-    mirage_high_precision(re, im, max_iter, bailout, scale) {
+    mirage_high_precision(z0r, z0i, addr, addi, max_iter, bailout, scale, includeZ0) {
         const one = 1n << scale
         const alphaFx = fxp.fromNumber(this.alpha, Number(scale)).bigInt
         const a1Fx = one - alphaFx
         const betaShifted = fxp.fromNumber(this.beta, Number(scale)).bigInt << scale
-        let X = 0n
-        let Y = 0n
+        let X = z0r
+        let Y = z0i
         let iter = -1
-        let Xq = 0n
-        let Yq = 0n
-        let zq = 0n
+        let Xq = (X * X) >> scale
+        let Yq = (Y * Y) >> scale
+        let zq = includeZ0 ? Xq + Yq : 0n
         const seq = []
+        if (includeZ0) {
+            seq.push([X, Y])
+        }
         while (zq <= bailout) {
             if (iter++ === max_iter) {
                 return [2, 0n, seq]
@@ -321,8 +340,8 @@ export class MandelbrotMiragePerturbation {
             const TY = (T * Y) >> scale
             const XTY = (X * TY) >> scale
             const TYq = (TY * TY) >> scale
-            const nX = (a1Fx * X + alphaFx * (Xq - TYq + re)) >> scale
-            const nY = (a1Fx * Y + alphaFx * ((XTY << 1n) + im)) >> scale
+            const nX = (a1Fx * X + alphaFx * (Xq - TYq + addr)) >> scale
+            const nY = (a1Fx * Y + alphaFx * ((XTY << 1n) + addi)) >> scale
             X = nX
             Y = nY
             seq.push([X, Y])
@@ -337,9 +356,9 @@ export class MandelbrotMiragePerturbation {
         const TY = (T * Y) >> scale
         const XTY = (X * TY) >> scale
         const TYq = (TY * TY) >> scale
-        const nX = (a1Fx * X + alphaFx * (Xq - TYq + re)) >> scale
-        const nY = (a1Fx * Y + alphaFx * ((XTY << 1n) + im)) >> scale
+        const nX = (a1Fx * X + alphaFx * (Xq - TYq + addr)) >> scale
+        const nY = (a1Fx * Y + alphaFx * ((XTY << 1n) + addi)) >> scale
         seq.push([nX, nY])
-        return [iter + 4, zq, seq]
+        return [includeZ0 ? iter + 5 : iter + 4, zq, seq]
     }
 }

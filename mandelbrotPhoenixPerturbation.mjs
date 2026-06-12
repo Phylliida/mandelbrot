@@ -1,17 +1,19 @@
 /**
- * Perturbation version of the tricorn iteration zₙ₊₁ = conj(zₙ)² + c for deep zoom up to
- * about 1e300. The map is anti-holomorphic, so with z = Z + ε the perturbation is simply the
- * conjugated Mandelbrot recurrence:
+ * Perturbation version of the phoenix iteration zₙ₊₁ = zₙ² + c + q·zₙ₋₁ for deep zoom up to
+ * about 1e300. With z = Z + ε and the previous-step perturbation φ = εₙ₋₁ the memory term
+ * perturbs exactly without any extra reference data:
  *
- *   εₙ₊₁ = conj((2·Zₙ + εₙ)·εₙ) + δ
+ *   εₙ₊₁ = (2·Zₙ + εₙ)·εₙ + q·φₙ + δ,   φₙ₊₁ = εₙ
  *
- * which is exact and cancellation-free. Uses the same reference point machinery as the mirage
- * perturbation: references are tried longest-orbit-first to avoid the escape-time selection
- * bias chaotic regions would otherwise introduce.
+ * because q·zₙ₋₁ − q·Zₙ₋₁ = q·φₙ. The reference sequence stores only (X, Y, errorBound) like
+ * the Mandelbrot perturbation. Uses the same longest-orbit-first reference machinery as the
+ * other perturbation engines.
  */
 import {WorkerContext, smoothen} from "./workerContext.mjs";
+import * as fxp from "./fxp.mjs";
+import {DEFAULT_Q} from "./mandelbrotPhoenix.mjs";
 
-export class MandelbrotTricornPerturbation {
+export class MandelbrotPhoenixPerturbation {
     /**
      * @param {WorkerContext} ctx
      */
@@ -25,6 +27,7 @@ export class MandelbrotTricornPerturbation {
 
     async process(task) {
         this.max_iter = task.maxIter
+        this.q = task.phoenixQ ?? DEFAULT_Q
         const w = task.w
         const h = task.h
 
@@ -73,7 +76,8 @@ export class MandelbrotTricornPerturbation {
             this.juliaIFx = seed1.bigInt
             bailout = Math.max(128, 2 * Math.hypot(seed0.toNumber(), seed1.toNumber()) + 16)
         } else {
-            bailout = smooth ? 128 : 4
+            // the q·zₙ₋₁ term can pull orbits back inwards, 128 keeps escape monotone (see float impl)
+            bailout = 128
         }
         const bigBailout = BigInt(Math.ceil(bailout)) << bigScale
 
@@ -111,8 +115,8 @@ export class MandelbrotTricornPerturbation {
                         const dcr = dr - refDr
                         const dci = di - refDi
                         const iter = this.julia
-                            ? this.tricorn_perturbation(dcr, dci, 0, 0, this.max_iter, bailout, referencePoint[3], referencePoint[4])
-                            : this.tricorn_perturbation(dcr, dci, dcr, dci, this.max_iter, bailout, referencePoint[3], referencePoint[4])
+                            ? this.phoenix_perturbation(dcr, dci, 0, 0, this.max_iter, bailout, referencePoint[3], referencePoint[4])
+                            : this.phoenix_perturbation(dcr, dci, dcr, dci, this.max_iter, bailout, referencePoint[3], referencePoint[4])
                         if (iter >= 0) {
                             values[offset] = smoothen(smooth, offset, iter, this.lastZq)
                             found = true
@@ -177,18 +181,16 @@ export class MandelbrotTricornPerturbation {
      * Returns -2 when the reference orbit is too short for this pixel and -1 when precision
      * was lost (glitch), in which case another reference point may still work.
      *
-     * @param {number} dcr
-     * @param {number} dci
-     * @param {number} max_iter
-     * @param {number} bailout
      * @param {Float64Array} zs flattened reference sequence with stride 3: (X, Y, zqErrorBound)
-     * @param {number} numZs number of points in zs
      * @returns {number} iter
      */
-    tricorn_perturbation(e0r, e0i, adr, adi, max_iter, bailout, zs, numZs) {
-        // ε₀ = δ (in julia mode the per-step term is zero, δ only enters here)
+    phoenix_perturbation(e0r, e0i, adr, adi, max_iter, bailout, zs, numZs) {
+        const q = this.q
+        // ε₀ = δ with φ₀ = 0 (in both modes the previous-step perturbation starts at zero)
         let u = e0r
         let v = e0i
+        let fu = 0
+        let fv = 0
 
         let iter = -1
         let zzq = 0
@@ -216,9 +218,11 @@ export class MandelbrotTricornPerturbation {
                 return -1
             }
 
-            // εₙ₊₁ = conj((2·Zₙ + εₙ)·εₙ) + δ
-            const _u = (X + zzr) * u - (Y + zzi) * v + adr
-            const _v = -2 * (X * v + u * zzi) + adi
+            // εₙ₊₁ = (2·Zₙ + εₙ)·εₙ + q·φₙ + δ,  φₙ₊₁ = εₙ
+            const _u = (X + zzr) * u - (Y + zzi) * v + q * fu + adr
+            const _v = (X + zzr) * v + (Y + zzi) * u + q * fv + adi
+            fu = u
+            fv = v
             u = _u
             v = _v
         }
@@ -227,16 +231,15 @@ export class MandelbrotTricornPerturbation {
     }
 
     /**
-     * @returns {[[number, number], number, BigInt, Float64Array, number]} [rr, ri], iter, zq, zs, numZs where zs
-     * is the flattened reference sequence with stride 3: (X, Y, zqErrorBound)
+     * @returns {[[number, number], number, BigInt, Float64Array, number]} [rr, ri], iter, zq, zs, numZs
      */
     calculate_reference(refr, refi, dr, di, bigScale, scaleFactor, bailout) {
         const start = performance.now()
         const rr = refr + BigInt(Math.round(dr * scaleFactor))
         const ri = refi + BigInt(Math.round(di * scaleFactor))
         const [iter, zq, seq] = this.julia
-            ? this.tricorn_high_precision(rr, ri, this.juliaRFx, this.juliaIFx, this.max_iter, bailout, bigScale, true)
-            : this.tricorn_high_precision(0n, 0n, rr, ri, this.max_iter, bailout, bigScale, false)
+            ? this.phoenix_high_precision(rr, ri, this.juliaRFx, this.juliaIFx, this.max_iter, bailout, bigScale, true)
+            : this.phoenix_high_precision(0n, 0n, rr, ri, this.max_iter, bailout, bigScale, false)
         const iterations = seq.length
         const zs = new Float64Array(iterations * 3)
         for (let idx = 0, base = 0; idx < iterations; idx++, base += 3) {
@@ -256,10 +259,13 @@ export class MandelbrotTricornPerturbation {
     /**
      * @returns {[number, BigInt, [BigInt, BigInt][]]} [iterations, zq, sequence]
      */
-    tricorn_high_precision(z0r, z0i, addr, addi, max_iter, bailout, scale, includeZ0) {
+    phoenix_high_precision(z0r, z0i, addr, addi, max_iter, bailout, scale, includeZ0) {
         const scale_1 = scale - 1n
+        const qFx = fxp.fromNumber(this.q, Number(scale)).bigInt
         let zr = z0r
         let zi = z0i
+        let prevR = 0n
+        let prevI = 0n
         let iter = -1
         let zrq = (zr * zr) >> scale
         let ziq = (zi * zi) >> scale
@@ -272,16 +278,20 @@ export class MandelbrotTricornPerturbation {
             if (iter++ === max_iter) {
                 return [2, 0n, seq]
             }
-            zi = -(zr * zi >> scale_1) + addi
-            zr = zrq - ziq + addr
+            const nzr = zrq - ziq + addr + ((qFx * prevR) >> scale)
+            const nzi = (zr * zi >> scale_1) + addi + ((qFx * prevI) >> scale)
+            prevR = zr
+            prevI = zi
+            zr = nzr
+            zi = nzi
             seq.push([zr, zi])
             zrq = (zr * zr) >> scale
             ziq = (zi * zi) >> scale
             zq = zrq + ziq
         }
-        zi = -(zr * zi >> scale_1) + addi
-        zr = zrq - ziq + addr
-        seq.push([zr, zi])
+        const nzr = zrq - ziq + addr + ((qFx * prevR) >> scale)
+        const nzi = (zr * zi >> scale_1) + addi + ((qFx * prevI) >> scale)
+        seq.push([nzr, nzi])
         return [includeZ0 ? iter + 5 : iter + 4, zq, seq]
     }
 }

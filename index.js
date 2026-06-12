@@ -5,6 +5,7 @@ import * as fxp from './fxp.mjs'
 import * as palette from './palette.mjs'
 import * as favorites from './favorites.js'
 import * as mgpu from './mandelbrotWebGPU.mjs'
+import * as pngMeta from './pngMetadata.mjs'
 import {WorkerContext} from "./workerContext.mjs";
 
 const SQUARE_SIZE = 32 // must be even or -1 for full-frame tasks
@@ -21,10 +22,16 @@ const MIN_ZOOM = fxp.fromNumber(1)
 // Each fractal lives in its own part of the complex plane
 const FRACTAL_HOME_VIEWS = {
     mandelbrot: [-0.5, 0],
+    multibrot: [0, 0],
     burningship: [-0.45, -0.4],
     tricorn: [-0.25, 0],
+    phoenix: [-0.3, 0],
     mirage: [-5.9, 0],
 }
+const MULTIBROT_DEFAULT_DEGREE = 3
+const PHOENIX_DEFAULT_Q = -0.5
+const PHOENIX_Q_MIN = -2
+const PHOENIX_Q_MAX = 2
 const MIRAGE_DEFAULT_ALPHA = 0.55
 const MIRAGE_DEFAULT_BETA = 1.9
 // The sliders cover the comfortable range, values can be entered manually within these bounds.
@@ -83,6 +90,11 @@ class Mandelbrot {
         this.fractalType = 'mandelbrot'
         this.mirageAlpha = MIRAGE_DEFAULT_ALPHA
         this.mirageBeta = MIRAGE_DEFAULT_BETA
+        this.multibrotDegree = MULTIBROT_DEFAULT_DEGREE
+        this.phoenixQ = PHOENIX_DEFAULT_Q
+        this.juliaMode = false
+        this.juliaSeed = null
+        this.preJuliaView = null
 
         this.palette = []
         this.paletteSelector = paletteSelector
@@ -132,7 +144,7 @@ class Mandelbrot {
 
     // The WebGPU implementation only renders the classic Mandelbrot set
     gpuActive() {
-        return this.useGpu && this.fractalType === 'mandelbrot'
+        return this.useGpu && this.fractalType === 'mandelbrot' && !this.juliaMode
     }
 
     _updatePrecision() {
@@ -215,7 +227,8 @@ class Mandelbrot {
             const buffer = screen.buffer
             const w = buffer.width
             const h = buffer.height
-            const paramHash = `${this.max_iter}-${this.smooth}-${this.fractalType}-${this.mirageAlpha}-${this.mirageBeta}`
+            const juliaHash = this.juliaMode ? `J${this.juliaSeed[0].bigInt}:${this.juliaSeed[1].bigInt}` : 'M'
+            const paramHash = `${this.max_iter}-${this.smooth}-${this.fractalType}-${this.mirageAlpha}-${this.mirageBeta}-${this.multibrotDegree}-${this.phoenixQ}-${juliaHash}`
 
             const frameTopLeft = this.canvas2complex(0, 0)
             // We need to adjust for the case that the width or height is not dividable by the pixel size
@@ -255,7 +268,11 @@ class Mandelbrot {
                         requiredPrecision: this.requiredPrecision,
                         fractal: this.fractalType,
                         mirageAlpha: this.mirageAlpha,
-                        mirageBeta: this.mirageBeta
+                        mirageBeta: this.mirageBeta,
+                        multibrotDegree: this.multibrotDegree,
+                        phoenixQ: this.phoenixQ,
+                        julia: this.juliaMode,
+                        juliaSeed: this.juliaSeed
                     }
                     this.taskqueue.push(task)
                 }
@@ -770,9 +787,9 @@ function zoomWithClicks(clicks, cooldown) {
 function zoomWithFactor(factor, cooldown) {
     const lowerBound = MIN_ZOOM.withScale(fractal.precision)
     if (fractal.zoom.leq(lowerBound) && factor < 1) return
-    // Only mandelbrot has an extended-float implementation, the other fractals cap the zoom
-    // where the regular perturbation algorithm runs out of float64 exponent range (about 1e300)
-    if (fractal.fractalType !== 'mandelbrot' && factor > 1 && fractal.requiredPrecision > 1000) return
+    // Only mandelbrot without julia has an extended-float implementation, everything else caps
+    // the zoom where the perturbation algorithm runs out of float64 exponent range (about 1e300)
+    if ((fractal.fractalType !== 'mandelbrot' || fractal.juliaMode) && factor > 1 && fractal.requiredPrecision > 1000) return
     let bigFactor = fxp.fromNumber(factor, fractal.precision);
     const ptr = fractal.canvas2complex(lastX, lastY)
     fractal.setCenter(ptr)
@@ -937,6 +954,13 @@ const iterationsElement = document.getElementById('max-iterations')
 const fullScreenButton = document.getElementById('fullscreen')
 const smoothToggle = document.getElementById('smooth')
 const fractalSelect = document.getElementById('fractal-select')
+const juliaToggle = document.getElementById('julia')
+const multibrotParamsRow = document.getElementById('multibrot-params')
+const multibrotDegreeSlider = document.getElementById('multibrot-degree')
+const multibrotDegreeLabel = document.getElementById('multibrot-degree-label')
+const phoenixParamsRow = document.getElementById('phoenix-params')
+const phoenixQSlider = document.getElementById('phoenix-q')
+const phoenixQInput = document.getElementById('phoenix-q-value')
 const mirageParamsRow = document.getElementById('mirage-params')
 const mirageAlphaSlider = document.getElementById('mirage-alpha')
 const mirageBetaSlider = document.getElementById('mirage-beta')
@@ -1043,6 +1067,7 @@ function initListeners() {
     })
     fractalSelect.addEventListener('change', (event) => {
         fractal.fractalType = event.target.value
+        exitJuliaMode()
         // A location in one fractal is meaningless in the other, so start at the fractal's home view
         const home = FRACTAL_HOME_VIEWS[fractal.fractalType]
         fractal.setZoom(fxp.fromNumber(1))
@@ -1050,7 +1075,53 @@ function initListeners() {
         updateFractalControls()
         redraw()
     })
+    juliaToggle.addEventListener('change', () => {
+        if (juliaToggle.checked) {
+            // the current view center becomes the julia seed, at full precision
+            fractal.juliaSeed = [fractal.center[0], fractal.center[1]]
+            fractal.preJuliaView = {center: [fractal.center[0], fractal.center[1]], zoom: fractal.zoom}
+            fractal.juliaMode = true
+            fractal.setZoom(fxp.fromNumber(1))
+            fractal.setCenter([fxp.fromNumber(0), fxp.fromNumber(0)])
+        } else {
+            const previous = fractal.preJuliaView
+            exitJuliaMode()
+            if (previous) {
+                fractal.setZoom(previous.zoom)
+                fractal.setCenter([previous.center[0], previous.center[1]])
+            } else {
+                const home = FRACTAL_HOME_VIEWS[fractal.fractalType]
+                fractal.setZoom(fxp.fromNumber(1))
+                fractal.setCenter(home.map(v => fxp.fromNumber(v)))
+            }
+        }
+        redraw()
+    })
     fractalSelect.addEventListener('keydown', (event) => {
+        event.stopPropagation()
+    })
+    multibrotDegreeSlider.addEventListener('input', () => {
+        fractal.multibrotDegree = Math.round(Number(multibrotDegreeSlider.value))
+        multibrotDegreeLabel.innerText = `Degree: ${fractal.multibrotDegree}`
+        redraw(false, 120)
+    })
+    multibrotDegreeSlider.addEventListener('change', () => {
+        redraw()
+    })
+    phoenixQSlider.addEventListener('input', () => {
+        fractal.phoenixQ = Number(phoenixQSlider.value)
+        phoenixQInput.value = fractal.phoenixQ
+        redraw(false, 120)
+    })
+    phoenixQSlider.addEventListener('change', () => {
+        redraw()
+    })
+    phoenixQInput.addEventListener('change', () => {
+        fractal.phoenixQ = clampMirageValue(Number(phoenixQInput.value), PHOENIX_Q_MIN, PHOENIX_Q_MAX, fractal.phoenixQ)
+        updateFractalControls()
+        redraw()
+    })
+    phoenixQInput.addEventListener('keydown', (event) => {
         event.stopPropagation()
     })
     mirageAlphaSlider.addEventListener('input', () => {
@@ -1102,6 +1173,20 @@ function initListeners() {
     document.getElementById("lucky-button").addEventListener('click', (event) => {
         iFeelLucky();
     })
+    document.getElementById("download-image").addEventListener('click', (event) => {
+        downloadImage()
+    })
+    const resumeFileInput = document.getElementById("resume-file")
+    document.getElementById("resume-image").addEventListener('click', (event) => {
+        resumeFileInput.click()
+    })
+    resumeFileInput.addEventListener('change', (event) => {
+        const file = event.target.files && event.target.files[0]
+        event.target.value = '' // allow picking the same file again later
+        if (file) {
+            resumeFromImage(file)
+        }
+    })
     appElement.addEventListener('keydown', (event) => {
         activeComponent.onKeydown(event)
     })
@@ -1122,13 +1207,29 @@ function syncMirageInputs() {
 function updateFractalControls() {
     fractalSelect.value = fractal.fractalType
     mirageParamsRow.hidden = fractal.fractalType !== 'mirage'
+    multibrotParamsRow.hidden = fractal.fractalType !== 'multibrot'
+    phoenixParamsRow.hidden = fractal.fractalType !== 'phoenix'
+    juliaToggle.checked = fractal.juliaMode
+    multibrotDegreeSlider.value = fractal.multibrotDegree
+    multibrotDegreeLabel.innerText = `Degree: ${fractal.multibrotDegree}`
+    phoenixQSlider.value = fractal.phoenixQ
+    phoenixQInput.value = fractal.phoenixQ
     syncMirageInputs()
+}
+
+function exitJuliaMode() {
+    fractal.juliaMode = false
+    fractal.juliaSeed = null
+    fractal.preJuliaView = null
 }
 
 function reset() {
     fractal.fractalType = 'mandelbrot'
     fractal.mirageAlpha = MIRAGE_DEFAULT_ALPHA
     fractal.mirageBeta = MIRAGE_DEFAULT_BETA
+    fractal.multibrotDegree = MULTIBROT_DEFAULT_DEGREE
+    fractal.phoenixQ = PHOENIX_DEFAULT_Q
+    exitJuliaMode()
     updateFractalControls()
     fractal.setZoom(fxp.fromNumber(1))
     fractal.setCenter([fxp.fromNumber(-0.5), fxp.fromNumber(0)])
@@ -1147,9 +1248,9 @@ function iFeelLucky() {
     redraw()
 }
 
-function updatePermalink() {
-    const url = new URL(window.location)
-    const p = url.searchParams
+// Encodes the full state (location, fractal, parameters, palette) the same way the
+// permalink does, so images and the url are interchangeable as restore points
+function encodeParams() {
     let palette = {
         id: paletteSelector.palette.id,
         density: paletteSelector.density,
@@ -1172,9 +1273,73 @@ function updatePermalink() {
     if (fractal.fractalType === 'mirage') {
         params.mirage = {alpha: fractal.mirageAlpha, beta: fractal.mirageBeta}
     }
-    p.set('params', btoa(JSON.stringify(params)))
+    if (fractal.fractalType === 'multibrot') {
+        params.multibrot = {degree: fractal.multibrotDegree}
+    }
+    if (fractal.fractalType === 'phoenix') {
+        params.phoenix = {q: fractal.phoenixQ}
+    }
+    if (fractal.juliaMode) {
+        params.julia = fractal.juliaSeed
+    }
+    return btoa(JSON.stringify(params))
+}
 
+function updatePermalink() {
+    const url = new URL(window.location)
+    url.searchParams.set('params', encodeParams())
     window.history.replaceState({}, '', url)
+}
+
+const PNG_PARAMS_KEYWORD = 'mandelbrotParams'
+
+function imageFilename() {
+    const zoomExp = fractal.zoom.bigIntValue().toString().length - 1
+    let name = fractal.fractalType
+    if (fractal.juliaMode) {
+        name += '-julia'
+    }
+    return `${name}-1e${zoomExp}.png`
+}
+
+function downloadImage() {
+    canvasElement.toBlob(async (blob) => {
+        if (!blob) {
+            return
+        }
+        const buffer = await blob.arrayBuffer()
+        let bytes
+        try {
+            bytes = pngMeta.embedText(buffer, PNG_PARAMS_KEYWORD, encodeParams())
+        } catch (e) {
+            console.log(`Could not embed the location metadata: ${e}`)
+            bytes = new Uint8Array(buffer) // download without metadata rather than not at all
+        }
+        const url = URL.createObjectURL(new Blob([bytes], {type: 'image/png'}))
+        const anchor = document.createElement('a')
+        anchor.href = url
+        anchor.download = imageFilename()
+        anchor.click()
+        setTimeout(() => URL.revokeObjectURL(url), 10000)
+    }, 'image/png')
+}
+
+async function resumeFromImage(file) {
+    const params = pngMeta.extractText(await file.arrayBuffer(), PNG_PARAMS_KEYWORD)
+    if (!params) {
+        alert('No fractal location found in this image. Only images saved with the Download button can be resumed.')
+        return
+    }
+    try {
+        initFromParams(params)
+    } catch (e) {
+        console.log(`Could not restore from image: ${e}`)
+        alert('The location data in this image could not be read.')
+        return
+    }
+    fractal.initPallete()
+    updatePermalink()
+    redraw()
 }
 
 function initUI() {
@@ -1208,6 +1373,15 @@ function initFromParams(params) {
     fractal.fractalType = FRACTAL_HOME_VIEWS[p.fractal] ? p.fractal : 'mandelbrot'
     fractal.mirageAlpha = clampMirageValue(Number(p.mirage && p.mirage.alpha), MIRAGE_ALPHA_MIN, MIRAGE_ALPHA_MAX, MIRAGE_DEFAULT_ALPHA)
     fractal.mirageBeta = clampMirageValue(Number(p.mirage && p.mirage.beta), MIRAGE_BETA_MIN, MIRAGE_BETA_MAX, MIRAGE_DEFAULT_BETA)
+    fractal.multibrotDegree = Math.round(clampMirageValue(Number(p.multibrot && p.multibrot.degree), 2, 8, MULTIBROT_DEFAULT_DEGREE))
+    fractal.phoenixQ = clampMirageValue(Number(p.phoenix && p.phoenix.q), PHOENIX_Q_MIN, PHOENIX_Q_MAX, PHOENIX_DEFAULT_Q)
+    if (p.julia) {
+        fractal.juliaMode = true
+        fractal.juliaSeed = p.julia.map(fxp.fromJSON)
+        fractal.preJuliaView = null
+    } else {
+        exitJuliaMode()
+    }
     fractal.setZoom(fxp.fromJSON(p.zoom))
     fractal.setCenter(p.center.map(fxp.fromJSON))
     fractal.max_iter = p.max_iter

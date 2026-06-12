@@ -1,17 +1,29 @@
 /**
- * Perturbation version of the tricorn iteration zₙ₊₁ = conj(zₙ)² + c for deep zoom up to
- * about 1e300. The map is anti-holomorphic, so with z = Z + ε the perturbation is simply the
- * conjugated Mandelbrot recurrence:
+ * Perturbation version of the multibrot iteration zₙ₊₁ = zₙ^d + c for deep zoom up to about
+ * 1e300. With z = Z + ε the perturbation expands binomially and cancellation-free:
  *
- *   εₙ₊₁ = conj((2·Zₙ + εₙ)·εₙ) + δ
+ *   εₙ₊₁ = Σₖ₌₁..d C(d,k)·Zₙ^(d−k)·εₙ^k + δ
  *
- * which is exact and cancellation-free. Uses the same reference point machinery as the mirage
- * perturbation: references are tried longest-orbit-first to avoid the escape-time selection
- * bias chaotic regions would otherwise introduce.
+ * evaluated as a Horner scheme over the binomial-scaled reference powers Bₖ = C(d,k)·Z^(d−k),
+ * which are precomputed per orbit point:
+ *
+ *   acc = 1;  for k = d−1 .. 1:  acc = acc·ε + Bₖ;  εₙ₊₁ = acc·ε + δ
+ *
+ * For d = 2 this reduces exactly to the classic Mandelbrot recurrence (2·Z + ε)·ε + δ.
+ * Uses the same longest-orbit-first reference machinery as the other perturbation engines.
  */
 import {WorkerContext, smoothen} from "./workerContext.mjs";
+import {DEFAULT_DEGREE} from "./mandelbrotMultibrot.mjs";
 
-export class MandelbrotTricornPerturbation {
+function binomials(d) {
+    const b = [1]
+    for (let k = 1; k <= d; k++) {
+        b[k] = b[k - 1] * (d - k + 1) / k
+    }
+    return b
+}
+
+export class MandelbrotMultibrotPerturbation {
     /**
      * @param {WorkerContext} ctx
      */
@@ -25,6 +37,8 @@ export class MandelbrotTricornPerturbation {
 
     async process(task) {
         this.max_iter = task.maxIter
+        this.degree = task.multibrotDegree ?? DEFAULT_DEGREE
+        this.logDegree = Math.log(this.degree)
         const w = task.w
         const h = task.h
 
@@ -111,10 +125,10 @@ export class MandelbrotTricornPerturbation {
                         const dcr = dr - refDr
                         const dci = di - refDi
                         const iter = this.julia
-                            ? this.tricorn_perturbation(dcr, dci, 0, 0, this.max_iter, bailout, referencePoint[3], referencePoint[4])
-                            : this.tricorn_perturbation(dcr, dci, dcr, dci, this.max_iter, bailout, referencePoint[3], referencePoint[4])
+                            ? this.multibrot_perturbation(dcr, dci, 0, 0, this.max_iter, bailout, referencePoint[3], referencePoint[4])
+                            : this.multibrot_perturbation(dcr, dci, dcr, dci, this.max_iter, bailout, referencePoint[3], referencePoint[4])
                         if (iter >= 0) {
-                            values[offset] = smoothen(smooth, offset, iter, this.lastZq)
+                            values[offset] = this.smoothenDegree(smooth, offset, iter, this.lastZq)
                             found = true
                             stats.numberOfLowPrecisionPoints++
                             break
@@ -127,7 +141,7 @@ export class MandelbrotTricornPerturbation {
 
                     if (!found) {
                         const newRef = this.calculate_reference(refr, refi, dr, di, bigScale, scaleFactor, bigBailout)
-                        values[offset] = smoothen(smooth, offset, newRef[1], Number(newRef[2]) / scaleFactor)
+                        values[offset] = this.smoothenDegree(smooth, offset, newRef[1], Number(newRef[2]) / scaleFactor)
                         const referencePoints = this.referencePoints
                         let pos = 0
                         while (pos < referencePoints.length && referencePoints[pos][4] >= newRef[4]) {
@@ -140,6 +154,18 @@ export class MandelbrotTricornPerturbation {
             }
             if (this.ctx.shouldStop()) return
         }
+    }
+
+    // Like the shared smoothen but with the degree-aware fractional iteration (log d growth)
+    smoothenDegree(smooth, offset, iter, zq) {
+        if (smooth && iter > 3) {
+            let log_zn = Math.log(zq) / 2
+            let nu = Math.log(log_zn / Math.log(2)) / this.logDegree
+            iter = Math.floor(iter + 1 - nu)
+            nu = nu - Math.floor(nu)
+            smooth[offset] = Math.floor(255 - 255 * nu)
+        }
+        return iter
     }
 
     updateCache(task, cWidth, cHeight, scaleFactor) {
@@ -177,15 +203,13 @@ export class MandelbrotTricornPerturbation {
      * Returns -2 when the reference orbit is too short for this pixel and -1 when precision
      * was lost (glitch), in which case another reference point may still work.
      *
-     * @param {number} dcr
-     * @param {number} dci
-     * @param {number} max_iter
-     * @param {number} bailout
-     * @param {Float64Array} zs flattened reference sequence with stride 3: (X, Y, zqErrorBound)
-     * @param {number} numZs number of points in zs
+     * @param {Float64Array} zs flattened reference sequence with stride 2d+1:
+     *   (X, Y, B₁r, B₁i, ..., B₍d₋₁₎r, B₍d₋₁₎i, zqErrorBound)
      * @returns {number} iter
      */
-    tricorn_perturbation(e0r, e0i, adr, adi, max_iter, bailout, zs, numZs) {
+    multibrot_perturbation(e0r, e0i, adr, adi, max_iter, bailout, zs, numZs) {
+        const d = this.degree
+        const stride = 2 * d + 1
         // ε₀ = δ (in julia mode the per-step term is zero, δ only enters here)
         let u = e0r
         let v = e0i
@@ -203,7 +227,7 @@ export class MandelbrotTricornPerturbation {
             }
 
             // Zₙ
-            const base = iter * 3
+            const base = iter * stride
             const X = zs[base]
             const Y = zs[base + 1]
 
@@ -211,14 +235,23 @@ export class MandelbrotTricornPerturbation {
             const zzr = X + u
             const zzi = Y + v
             zzq = zzr * zzr + zzi * zzi
-            if (zzq < zs[base + 2]) {
+            if (zzq < zs[base + 2 * d]) {
                 this.lastZq = 0
                 return -1
             }
 
-            // εₙ₊₁ = conj((2·Zₙ + εₙ)·εₙ) + δ
-            const _u = (X + zzr) * u - (Y + zzi) * v + adr
-            const _v = -2 * (X * v + u * zzi) + adi
+            // Horner over the binomial-scaled powers, see file header
+            let ar = 1
+            let ai = 0
+            for (let k = d - 1; k >= 1; k--) {
+                const br = zs[base + 2 * k]
+                const bi = zs[base + 2 * k + 1]
+                const t = ar * u - ai * v + br
+                ai = ar * v + ai * u + bi
+                ar = t
+            }
+            const _u = ar * u - ai * v + adr
+            const _v = ar * v + ai * u + adi
             u = _u
             v = _v
         }
@@ -227,25 +260,41 @@ export class MandelbrotTricornPerturbation {
     }
 
     /**
-     * @returns {[[number, number], number, BigInt, Float64Array, number]} [rr, ri], iter, zq, zs, numZs where zs
-     * is the flattened reference sequence with stride 3: (X, Y, zqErrorBound)
+     * @returns {[[number, number], number, BigInt, Float64Array, number]} [rr, ri], iter, zq, zs, numZs
      */
     calculate_reference(refr, refi, dr, di, bigScale, scaleFactor, bailout) {
         const start = performance.now()
+        const d = this.degree
+        const stride = 2 * d + 1
+        const binom = binomials(d)
         const rr = refr + BigInt(Math.round(dr * scaleFactor))
         const ri = refi + BigInt(Math.round(di * scaleFactor))
         const [iter, zq, seq] = this.julia
-            ? this.tricorn_high_precision(rr, ri, this.juliaRFx, this.juliaIFx, this.max_iter, bailout, bigScale, true)
-            : this.tricorn_high_precision(0n, 0n, rr, ri, this.max_iter, bailout, bigScale, false)
+            ? this.multibrot_high_precision(rr, ri, this.juliaRFx, this.juliaIFx, this.max_iter, bailout, bigScale, true)
+            : this.multibrot_high_precision(0n, 0n, rr, ri, this.max_iter, bailout, bigScale, false)
         const iterations = seq.length
-        const zs = new Float64Array(iterations * 3)
-        for (let idx = 0, base = 0; idx < iterations; idx++, base += 3) {
+        const zs = new Float64Array(iterations * stride)
+        for (let idx = 0, base = 0; idx < iterations; idx++, base += stride) {
             const point = seq[idx]
             const x = Number(point[0]) / scaleFactor
             const y = Number(point[1]) / scaleFactor
             zs[base] = x
             zs[base + 1] = y
-            zs[base + 2] = (x * x + y * y) * 0.000001
+            // float powers Z^j and the binomial-scaled Bₖ = C(d,k)·Z^(d−k), Bₖ at index pair k
+            // (consistent with the float arithmetic of the pixel loop)
+            let pwr = x
+            let pwi = y
+            zs[base + 2 * (d - 1)] = binom[d - 1] * pwr      // B₍d₋₁₎ = C(d,d−1)·Z¹
+            zs[base + 2 * (d - 1) + 1] = binom[d - 1] * pwi
+            for (let j = 2; j <= d - 1; j++) {
+                const t = pwr * x - pwi * y
+                pwi = pwr * y + pwi * x
+                pwr = t
+                const k = d - j  // Bₖ pairs with Z^j
+                zs[base + 2 * k] = binom[k] * pwr
+                zs[base + 2 * k + 1] = binom[k] * pwi
+            }
+            zs[base + 2 * d] = (x * x + y * y) * 0.000001
         }
         const end = performance.now()
         this.ctx.stats.timeSpendInHighPrecision += end - start
@@ -256,14 +305,12 @@ export class MandelbrotTricornPerturbation {
     /**
      * @returns {[number, BigInt, [BigInt, BigInt][]]} [iterations, zq, sequence]
      */
-    tricorn_high_precision(z0r, z0i, addr, addi, max_iter, bailout, scale, includeZ0) {
-        const scale_1 = scale - 1n
+    multibrot_high_precision(z0r, z0i, addr, addi, max_iter, bailout, scale, includeZ0) {
+        const d = this.degree
         let zr = z0r
         let zi = z0i
         let iter = -1
-        let zrq = (zr * zr) >> scale
-        let ziq = (zi * zi) >> scale
-        let zq = includeZ0 ? zrq + ziq : 0n
+        let zq = includeZ0 ? ((zr * zr) >> scale) + ((zi * zi) >> scale) : 0n
         const seq = []
         if (includeZ0) {
             seq.push([zr, zi])
@@ -272,16 +319,28 @@ export class MandelbrotTricornPerturbation {
             if (iter++ === max_iter) {
                 return [2, 0n, seq]
             }
-            zi = -(zr * zi >> scale_1) + addi
-            zr = zrq - ziq + addr
+            // z^d by repeated complex multiplication in fixed point
+            let wr = zr
+            let wi = zi
+            for (let k = 1; k < d; k++) {
+                const t = (wr * zr - wi * zi) >> scale
+                wi = (wr * zi + wi * zr) >> scale
+                wr = t
+            }
+            zr = wr + addr
+            zi = wi + addi
             seq.push([zr, zi])
-            zrq = (zr * zr) >> scale
-            ziq = (zi * zi) >> scale
-            zq = zrq + ziq
+            zq = ((zr * zr) >> scale) + ((zi * zi) >> scale)
         }
-        zi = -(zr * zi >> scale_1) + addi
-        zr = zrq - ziq + addr
-        seq.push([zr, zi])
+        // one more point so that pixels escaping just after the reference still have orbit data
+        let wr = zr
+        let wi = zi
+        for (let k = 1; k < d; k++) {
+            const t = (wr * zr - wi * zi) >> scale
+            wi = (wr * zi + wi * zr) >> scale
+            wr = t
+        }
+        seq.push([wr + addr, wi + addi])
         return [includeZ0 ? iter + 5 : iter + 4, zq, seq]
     }
 }

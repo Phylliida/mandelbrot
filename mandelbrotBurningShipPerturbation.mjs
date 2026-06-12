@@ -76,8 +76,18 @@ export class MandelbrotBurningShipPerturbation {
         const refr = rmin.bigInt
         const refi = imin.bigInt
 
-        const bailout = smooth ? 128 : 4
-        const bigBailout = BigInt(bailout) << bigScale
+        this.julia = task.julia === true
+        let bailout
+        if (this.julia) {
+            const seed0 = task.juliaSeed[0].withScale(scale)
+            const seed1 = task.juliaSeed[1].withScale(scale)
+            this.juliaRFx = seed0.bigInt
+            this.juliaIFx = seed1.bigInt
+            bailout = Math.max(128, 2 * Math.hypot(seed0.toNumber(), seed1.toNumber()) + 16)
+        } else {
+            bailout = smooth ? 128 : 4
+        }
+        const bigBailout = BigInt(Math.ceil(bailout)) << bigScale
 
         this.updateCache(task, cWidth, cHeight, scaleFactor)
 
@@ -110,7 +120,11 @@ export class MandelbrotBurningShipPerturbation {
                         const refDr = referencePoint[0][0]
                         const refDi = referencePoint[0][1]
 
-                        const iter = this.burning_ship_perturbation(dr - refDr, di - refDi, this.max_iter, bailout, referencePoint[3], referencePoint[4])
+                        const dcr = dr - refDr
+                        const dci = di - refDi
+                        const iter = this.julia
+                            ? this.burning_ship_perturbation(dcr, dci, 0, 0, this.max_iter, bailout, referencePoint[3], referencePoint[4])
+                            : this.burning_ship_perturbation(dcr, dci, dcr, dci, this.max_iter, bailout, referencePoint[3], referencePoint[4])
                         if (iter >= 0) {
                             values[offset] = smoothen(smooth, offset, iter, this.lastZq)
                             found = true
@@ -183,10 +197,10 @@ export class MandelbrotBurningShipPerturbation {
      * @param {number} numZs number of points in zs
      * @returns {number} iter
      */
-    burning_ship_perturbation(dcr, dci, max_iter, bailout, zs, numZs) {
-        // ε₀ = δ
-        let u = dcr
-        let v = dci
+    burning_ship_perturbation(e0r, e0i, adr, adi, max_iter, bailout, zs, numZs) {
+        // ε₀ = δ (in julia mode the per-step term is zero, δ only enters here)
+        let u = e0r
+        let v = e0i
 
         let iter = -1
         let zzq = 0
@@ -217,8 +231,8 @@ export class MandelbrotBurningShipPerturbation {
 
             // real part like Mandelbrot, imaginary part via diffabs (see file header)
             const m = X * v + u * zzi  // X·v + u·(Y+v) = X·v + Y·u + u·v
-            const _u = (X + zzr) * u - (Y + zzi) * v + dcr
-            const _v = 2 * diffabs(XY, m) + dci
+            const _u = (X + zzr) * u - (Y + zzi) * v + adr
+            const _v = 2 * diffabs(XY, m) + adi
             u = _u
             v = _v
         }
@@ -234,7 +248,9 @@ export class MandelbrotBurningShipPerturbation {
         const start = performance.now()
         const rr = refr + BigInt(Math.round(dr * scaleFactor))
         const ri = refi + BigInt(Math.round(di * scaleFactor))
-        const [iter, zq, seq] = this.burning_ship_high_precision(rr, ri, this.max_iter, bailout, bigScale)
+        const [iter, zq, seq] = this.julia
+            ? this.burning_ship_high_precision(rr, ri, this.juliaRFx, this.juliaIFx, this.max_iter, bailout, bigScale, true)
+            : this.burning_ship_high_precision(0n, 0n, rr, ri, this.max_iter, bailout, bigScale, false)
         const iterations = seq.length
         const zs = new Float64Array(iterations * 4)
         for (let idx = 0, base = 0; idx < iterations; idx++, base += 4) {
@@ -255,23 +271,26 @@ export class MandelbrotBurningShipPerturbation {
     /**
      * @returns {[number, BigInt, [BigInt, BigInt][]]} [iterations, zq, sequence]
      */
-    burning_ship_high_precision(re, im, max_iter, bailout, scale) {
+    burning_ship_high_precision(z0r, z0i, addr, addi, max_iter, bailout, scale, includeZ0) {
         const scale_1 = scale - 1n
-        let zr = 0n
-        let zi = 0n
+        let zr = z0r
+        let zi = z0i
         let iter = -1
-        let zrq = 0n
-        let ziq = 0n
-        let zq = 0n
+        let zrq = (zr * zr) >> scale
+        let ziq = (zi * zi) >> scale
+        let zq = includeZ0 ? zrq + ziq : 0n
         const seq = []
+        if (includeZ0) {
+            seq.push([zr, zi])
+        }
         while (zq <= bailout) {
             if (iter++ === max_iter) {
                 return [2, 0n, seq]
             }
             let p = zr * zi
             if (p < 0n) p = -p
-            zi = (p >> scale_1) + im
-            zr = zrq - ziq + re
+            zi = (p >> scale_1) + addi
+            zr = zrq - ziq + addr
             seq.push([zr, zi])
             zrq = (zr * zr) >> scale
             ziq = (zi * zi) >> scale
@@ -279,9 +298,9 @@ export class MandelbrotBurningShipPerturbation {
         }
         let p = zr * zi
         if (p < 0n) p = -p
-        zi = (p >> scale_1) + im
-        zr = zrq - ziq + re
+        zi = (p >> scale_1) + addi
+        zr = zrq - ziq + addr
         seq.push([zr, zi])
-        return [iter + 4, zq, seq]
+        return [includeZ0 ? iter + 5 : iter + 4, zq, seq]
     }
 }
