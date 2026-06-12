@@ -9,6 +9,10 @@ import {MandelbrotPerturbation} from "./mandelbrotPerturbation.mjs";
 import {MandelbrotPerturbationExtFloat} from "./mandelbrotPerturbationExtFloat.mjs";
 import {MandelbrotMirage} from "./mandelbrotMirage.mjs";
 import {MandelbrotMiragePerturbation} from "./mandelbrotMiragePerturbation.mjs";
+import {MandelbrotBurningShip} from "./mandelbrotBurningShip.mjs";
+import {MandelbrotBurningShipPerturbation} from "./mandelbrotBurningShipPerturbation.mjs";
+import {MandelbrotTricorn} from "./mandelbrotTricorn.mjs";
+import {MandelbrotTricornPerturbation} from "./mandelbrotTricornPerturbation.mjs";
 import {MandelbrotWebGPU} from "./mandelbrotWebGPU.mjs";
 
 const ctx = new WorkerContext()
@@ -43,12 +47,36 @@ async function initMandelbrotMiragePerturbation() {
     return new MandelbrotMiragePerturbation(ctx)
 }
 
+async function initMandelbrotBurningShip() {
+    await new Promise(resolve => setTimeout(resolve, 1))
+    return new MandelbrotBurningShip(ctx)
+}
+
+async function initMandelbrotBurningShipPerturbation() {
+    await new Promise(resolve => setTimeout(resolve, 1))
+    return new MandelbrotBurningShipPerturbation(ctx)
+}
+
+async function initMandelbrotTricorn() {
+    await new Promise(resolve => setTimeout(resolve, 1))
+    return new MandelbrotTricorn(ctx)
+}
+
+async function initMandelbrotTricornPerturbation() {
+    await new Promise(resolve => setTimeout(resolve, 1))
+    return new MandelbrotTricornPerturbation(ctx)
+}
+
 const mandelbrotFloat = initMandelbrotFloat();
 const mandelbrotFxP = initMandelbrotFxP();
 const mandelbrotPerturbation = initMandelbrotPerturbation();
 const mandelbrotPerturbationExtFloat = initMandelbrotPerturbationExtFloat();
 const mandelbrotMirage = initMandelbrotMirage();
 const mandelbrotMiragePerturbation = initMandelbrotMiragePerturbation();
+const mandelbrotBurningShip = initMandelbrotBurningShip();
+const mandelbrotBurningShipPerturbation = initMandelbrotBurningShipPerturbation();
+const mandelbrotTricorn = initMandelbrotTricorn();
+const mandelbrotTricornPerturbation = initMandelbrotTricornPerturbation();
 
 onmessage = handleMessage
 
@@ -63,11 +91,15 @@ async function handleMessage(msg) {
         const implPromise =
             message.fractal === 'mirage'
                 ? (message.requiredPrecision > 58 ? mandelbrotMiragePerturbation : mandelbrotMirage)
-                : message.requiredPrecision > 1020
-                    ? mandelbrotPerturbationExtFloat
-                    : message.requiredPrecision > 58
-                        ? mandelbrotPerturbation
-                        : mandelbrotFloat
+                : message.fractal === 'burningship'
+                    ? (message.requiredPrecision > 58 ? mandelbrotBurningShipPerturbation : mandelbrotBurningShip)
+                    : message.fractal === 'tricorn'
+                        ? (message.requiredPrecision > 58 ? mandelbrotTricornPerturbation : mandelbrotTricorn)
+                        : message.requiredPrecision > 1020
+                            ? mandelbrotPerturbationExtFloat
+                            : message.requiredPrecision > 58
+                                ? mandelbrotPerturbation
+                                : mandelbrotFloat
 
         const impl = await implPromise
         // console.log(`Precision ${message.requiredPrecision}, using ${impl.constructor.name}`)
