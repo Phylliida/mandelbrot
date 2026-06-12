@@ -1,13 +1,18 @@
 /**
- * @author Bert Baron
+ * The Phoenix fractal: zₙ₊₁ = zₙ² + c + q·zₙ₋₁ with a real parameter q (task.phoenixQ,
+ * default −0.5). The previous iterate feeds back into every step, which produces the famous
+ * feathered "phoenix bird" julia sets (seed c ≈ 0.5667, q = −0.5).
+ * Implementation of the float64 algorithm, structured like MandelbrotFloat.
+ *
+ * Because the q·zₙ₋₁ term can pull an orbit back inwards (like the mirage relaxation), the
+ * bailout is always at least 128: from there |z|² dominates |c| + |q|·|zₙ₋₁| for |q| ≤ 2 and
+ * any reachable c, so escape is monotone.
  */
 import {WorkerContext} from "./workerContext.mjs";
 
-/**
- * Implementation of the Mandelbrot algorithm using (floating point) numbers.
- * Fast, but works with a precision up to about 58 bits
- */
-export class MandelbrotFloat {
+export const DEFAULT_Q = -0.5
+
+export class MandelbrotPhoenix {
     /**
      * @param {WorkerContext} ctx the context for the worker
      */
@@ -18,12 +23,14 @@ export class MandelbrotFloat {
 
     async process(task) {
         this.max_iter = task.maxIter
+        this.q = task.phoenixQ ?? DEFAULT_Q
         this.julia = task.julia === true
         if (this.julia) {
             this.juliaR = task.juliaSeed[0].toNumber()
             this.juliaI = task.juliaSeed[1].toNumber()
-            // |z|² − |z| must outgrow |c| at the escape radius, the margin covers any reachable seed
-            this.juliaBailout = Math.max(128, 2 * Math.hypot(this.juliaR, this.juliaI) + 16)
+            this.bailout = Math.max(128, 2 * Math.hypot(this.juliaR, this.juliaI) + 16)
+        } else {
+            this.bailout = 128
         }
         const w = task.w
         const h = task.h
@@ -51,16 +58,6 @@ export class MandelbrotFloat {
         }
     }
 
-    /**
-     * @param {Int32Array} values
-     * @param {Uint8ClampedArray|null} smooth
-     * @param {number} w
-     * @param {number} h
-     * @param {[number, number]} topleft
-     * @param {[number, number]} bottomright
-     * @param {boolean} skipTopLeft
-     * @param {string} jobToken
-     */
     calculate(values, smooth, w, h, topleft, bottomright, skipTopLeft, jobToken) {
         const rmin = topleft[0]
         const rmax = bottomright[0]
@@ -85,24 +82,13 @@ export class MandelbrotFloat {
         }
     }
 
-    /**
-     *
-     * @param {number} y
-     * @param {number} w
-     * @param {number} x
-     * @param {number} rmin
-     * @param {number} dr
-     * @param {number} im
-     * @param {Int32Array} values
-     * @param {Uint8ClampedArray|null} smooth
-     */
     calculatePixel(y, w, x, rmin, dr, im, values, smooth) {
         let offset = y * w + x
         let re = rmin + dr * x
         if (smooth) {
             let iter = this.julia
-                ? this.mandelbrotJulia(re, im, this.juliaR, this.juliaI, this.max_iter, this.juliaBailout)
-                : this.mandelbrot(re, im, this.max_iter, 128)
+                ? this.phoenixJulia(re, im, this.juliaR, this.juliaI, this.max_iter, this.bailout)
+                : this.phoenix(re, im, this.max_iter, this.bailout)
             let zq = this.lastZq
             let nu = 1
             if (iter > 3) {
@@ -115,110 +101,102 @@ export class MandelbrotFloat {
             values[offset] = iter
         } else {
             values[offset] = this.julia
-                ? this.mandelbrotJulia(re, im, this.juliaR, this.juliaI, this.max_iter, this.juliaBailout)
-                : this.mandelbrot(re, im, this.max_iter, 4)
+                ? this.phoenixJulia(re, im, this.juliaR, this.juliaI, this.max_iter, this.bailout)
+                : this.phoenix(re, im, this.max_iter, this.bailout)
         }
     }
 
     /**
-     * Julia variant: the pixel is the starting point z₀ and (jr, ji) is the fixed seed.
-     * Iteration counting matches the perturbation implementation: a pixel already outside
-     * the bailout escapes at iteration 0 and yields 4.
+     * Returns the iteration count, with the squared escape radius left in this.lastZq.
+     * Interior points (which would reach max_iter) are returned as the marker value 2.
      *
      * @returns {number} iter
      */
-    mandelbrotJulia(zr, zi, jr, ji, max_iter, bailout) {
+    phoenix(re, im, max_iter, bailout) {
+        const q = this.q
+        let zr = 0.0
+        let zi = 0.0
+        let prevR = 0.0
+        let prevI = 0.0
         let iter = -1
-        let zrq = zr * zr
-        let ziq = zi * zi
         let zq = 0.0
+        // Brent-style periodicity detection on the full (z, zₙ₋₁) state
         let pr = 0.0
         let pi = 0.0
+        let ppr = 0.0
+        let ppi = 0.0
         let period = 8
-        for (;;) {
+        while (zq <= bailout) {
+            const nzr = zr * zr - zi * zi + re + q * prevR
+            const nzi = 2 * zr * zi + im + q * prevI
+            prevR = zr
+            prevI = zi
+            zr = nzr
+            zi = nzi
             if (iter++ === max_iter) {
                 this.lastZq = 0
                 return 2
             }
-            zq = zrq + ziq
-            if (zq > bailout) {
-                break
-            }
-            zi = 2 * zr * zi + ji
-            zr = zrq - ziq + jr
-            if (zr === pr && zi === pi) {
+            if (zr === pr && zi === pi && prevR === ppr && prevI === ppi) {
                 this.lastZq = 0
                 return 2
             }
             if (iter === period) {
                 pr = zr
                 pi = zi
+                ppr = prevR
+                ppi = prevI
                 period += period
             }
-            zrq = zr * zr
-            ziq = zi * zi
+            zq = zr * zr + zi * zi
         }
         this.lastZq = zq
         return iter + 4
     }
 
     /**
-     * Returns the iteration count, with the squared escape radius left in this.lastZq.
-     * Interior points (which would reach max_iter) are returned as the marker value 2,
-     * exactly like the plain algorithm does.
+     * Julia variant: the pixel is the starting point z₀ (with zₙ₋₁ = 0) and (jr, ji) is the
+     * fixed seed.
      *
-     * @param {number} re
-     * @param {number} im
-     * @param {number} max_iter
-     * @param {number} bailout
      * @returns {number} iter
      */
-    mandelbrot(re, im, max_iter, bailout) {
-        // Analytic interior tests: points in the main cardioid or the period-2 bulb never escape,
-        // so we can skip iterating them to max_iter.
-        const imq = im * im
-        const xq = re - 0.25
-        const q = xq * xq + imq
-        if (q * (q + xq) <= 0.25 * imq) {
-            this.lastZq = 0
-            return 2
-        }
-        const xp1 = re + 1
-        if (xp1 * xp1 + imq <= 0.0625) {
-            this.lastZq = 0
-            return 2
-        }
-
-        let zr = 0.0
-        let zi = 0.0
+    phoenixJulia(zr, zi, jr, ji, max_iter, bailout) {
+        const q = this.q
+        let prevR = 0.0
+        let prevI = 0.0
         let iter = -1
-        let zrq = 0.0
-        let ziq = 0.0
         let zq = 0.0
-        // Brent-style periodicity detection: if the orbit returns exactly to a previously seen
-        // point it is caught in a cycle and will never escape (interior point).
         let pr = 0.0
         let pi = 0.0
+        let ppr = 0.0
+        let ppi = 0.0
         let period = 8
-        while (zq <= bailout) {
-            zi = 2 * zr * zi + im
-            zr = zrq - ziq + re
+        for (;;) {
             if (iter++ === max_iter) {
                 this.lastZq = 0
                 return 2
             }
-            if (zr === pr && zi === pi) {
+            zq = zr * zr + zi * zi
+            if (zq > bailout) {
+                break
+            }
+            const nzr = zr * zr - zi * zi + jr + q * prevR
+            const nzi = 2 * zr * zi + ji + q * prevI
+            prevR = zr
+            prevI = zi
+            zr = nzr
+            zi = nzi
+            if (zr === pr && zi === pi && prevR === ppr && prevI === ppi) {
                 this.lastZq = 0
                 return 2
             }
             if (iter === period) {
                 pr = zr
                 pi = zi
+                ppr = prevR
+                ppi = prevI
                 period += period
             }
-            zrq = zr * zr
-            ziq = zi * zi
-            zq = zrq + ziq
         }
         this.lastZq = zq
         return iter + 4

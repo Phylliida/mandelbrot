@@ -13,6 +13,10 @@ import {MandelbrotBurningShip} from "./mandelbrotBurningShip.mjs";
 import {MandelbrotBurningShipPerturbation} from "./mandelbrotBurningShipPerturbation.mjs";
 import {MandelbrotTricorn} from "./mandelbrotTricorn.mjs";
 import {MandelbrotTricornPerturbation} from "./mandelbrotTricornPerturbation.mjs";
+import {MandelbrotMultibrot} from "./mandelbrotMultibrot.mjs";
+import {MandelbrotMultibrotPerturbation} from "./mandelbrotMultibrotPerturbation.mjs";
+import {MandelbrotPhoenix} from "./mandelbrotPhoenix.mjs";
+import {MandelbrotPhoenixPerturbation} from "./mandelbrotPhoenixPerturbation.mjs";
 import {MandelbrotWebGPU} from "./mandelbrotWebGPU.mjs";
 
 const ctx = new WorkerContext()
@@ -67,6 +71,26 @@ async function initMandelbrotTricornPerturbation() {
     return new MandelbrotTricornPerturbation(ctx)
 }
 
+async function initMandelbrotMultibrot() {
+    await new Promise(resolve => setTimeout(resolve, 1))
+    return new MandelbrotMultibrot(ctx)
+}
+
+async function initMandelbrotMultibrotPerturbation() {
+    await new Promise(resolve => setTimeout(resolve, 1))
+    return new MandelbrotMultibrotPerturbation(ctx)
+}
+
+async function initMandelbrotPhoenix() {
+    await new Promise(resolve => setTimeout(resolve, 1))
+    return new MandelbrotPhoenix(ctx)
+}
+
+async function initMandelbrotPhoenixPerturbation() {
+    await new Promise(resolve => setTimeout(resolve, 1))
+    return new MandelbrotPhoenixPerturbation(ctx)
+}
+
 const mandelbrotFloat = initMandelbrotFloat();
 const mandelbrotFxP = initMandelbrotFxP();
 const mandelbrotPerturbation = initMandelbrotPerturbation();
@@ -77,6 +101,10 @@ const mandelbrotBurningShip = initMandelbrotBurningShip();
 const mandelbrotBurningShipPerturbation = initMandelbrotBurningShipPerturbation();
 const mandelbrotTricorn = initMandelbrotTricorn();
 const mandelbrotTricornPerturbation = initMandelbrotTricornPerturbation();
+const mandelbrotMultibrot = initMandelbrotMultibrot();
+const mandelbrotMultibrotPerturbation = initMandelbrotMultibrotPerturbation();
+const mandelbrotPhoenix = initMandelbrotPhoenix();
+const mandelbrotPhoenixPerturbation = initMandelbrotPhoenixPerturbation();
 
 onmessage = handleMessage
 
@@ -95,11 +123,15 @@ async function handleMessage(msg) {
                     ? (message.requiredPrecision > 58 ? mandelbrotBurningShipPerturbation : mandelbrotBurningShip)
                     : message.fractal === 'tricorn'
                         ? (message.requiredPrecision > 58 ? mandelbrotTricornPerturbation : mandelbrotTricorn)
-                        : message.requiredPrecision > 1020
-                            ? mandelbrotPerturbationExtFloat
-                            : message.requiredPrecision > 58
-                                ? mandelbrotPerturbation
-                                : mandelbrotFloat
+                        : message.fractal === 'multibrot'
+                            ? (message.requiredPrecision > 58 ? mandelbrotMultibrotPerturbation : mandelbrotMultibrot)
+                            : message.fractal === 'phoenix'
+                                ? (message.requiredPrecision > 58 ? mandelbrotPhoenixPerturbation : mandelbrotPhoenix)
+                                : message.requiredPrecision > 1020 && !message.julia // the extended float algorithm has no julia support
+                                    ? mandelbrotPerturbationExtFloat
+                                    : message.requiredPrecision > 58
+                                        ? mandelbrotPerturbation
+                                        : mandelbrotFloat
 
         const impl = await implPromise
         // console.log(`Precision ${message.requiredPrecision}, using ${impl.constructor.name}`)
@@ -123,6 +155,9 @@ function parseMessage(msg) {
         msg.data.frameTopLeft[1] = fxp.fromJSON(msg.data.frameTopLeft[1])
         msg.data.frameBottomRight[0] = fxp.fromJSON(msg.data.frameBottomRight[0])
         msg.data.frameBottomRight[1] = fxp.fromJSON(msg.data.frameBottomRight[1])
+        if (msg.data.juliaSeed) {
+            msg.data.juliaSeed = msg.data.juliaSeed.map(fxp.fromJSON)
+        }
     }
     return msg.data
 }

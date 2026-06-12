@@ -68,10 +68,33 @@
                 <div class="col col-sm-6" data-bs-toggle="tooltip" data-bs-placement="left" title="Fractal type (mirage renders on the CPU)">
                     <select id="fractal-select" class="form-select form-select-sm">
                         <option value="mandelbrot" selected>Mandelbrot</option>
+                        <option value="multibrot">Multibrot</option>
                         <option value="burningship">Burning Ship</option>
                         <option value="tricorn">Tricorn</option>
+                        <option value="phoenix">Phoenix</option>
                         <option value="mirage">Mirage</option>
                     </select>
+                </div>
+            </div>
+            <div class="mb-2 g-1 row">
+                <div class="col col-sm-6 form-check form-switch" data-bs-toggle="tooltip" data-bs-placement="left" title="Render the Julia set of the current view center">
+                    <input id="julia" class="form-check-input" type="checkbox" role="switch"/>
+                    <label for="julia" class="form-check-label">Julia mode</label>
+                </div>
+            </div>
+            <div id="multibrot-params" class="mb-2 g-1 row" hidden>
+                <div class="col col-sm-6" data-bs-toggle="tooltip" data-bs-placement="left" title="The power d in z^d + c">
+                    <label id="multibrot-degree-label" for="multibrot-degree" class="form-label">Degree: 3</label>
+                    <input id="multibrot-degree" type="range" class="form-range" min="2" max="8" step="1" value="3"/>
+                </div>
+            </div>
+            <div id="phoenix-params" class="mb-2 g-1 row" hidden>
+                <div class="col col-sm-6" data-bs-toggle="tooltip" data-bs-placement="left" title="Feedback strength of the previous iterate. Type a value to go beyond the slider range">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <label for="phoenix-q-value" class="form-label mb-0">Phoenix q</label>
+                        <input id="phoenix-q-value" type="number" class="form-control form-control-sm mirage-value-input" step="any" value="-0.5"/>
+                    </div>
+                    <input id="phoenix-q" type="range" class="form-range" min="-1" max="1" step="0.01" value="-0.5"/>
                 </div>
             </div>
             <div id="mirage-params" class="mb-2 g-1 row" hidden>
@@ -117,6 +140,19 @@
                     <button id="lucky-button" class="btn btn-success form-control form-control-sm" type="button">
                         I feel lucky
                     </button>
+                </div>
+            </div>
+            <div class="mb-2 g-1 row">
+                <div class="col col-sm-6" data-bs-toggle="tooltip" data-bs-placement="left" title="Download the image with the location embedded in its metadata">
+                    <button id="download-image" class="btn btn-success form-control form-control-sm" type="button">
+                        Download
+                    </button>
+                </div>
+                <div class="col col-sm-6" data-bs-toggle="tooltip" data-bs-placement="left" title="Jump back to the location embedded in a downloaded image">
+                    <button id="resume-image" class="btn btn-success form-control form-control-sm" type="button">
+                        Resume
+                    </button>
+                    <input id="resume-file" type="file" accept="image/png" hidden/>
                 </div>
             </div>
             <div class="mb-2 g-1 row">

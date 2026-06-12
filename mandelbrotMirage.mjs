@@ -50,15 +50,23 @@ export class MandelbrotMirage {
         this.max_iter = task.maxIter
         this.alpha = task.mirageAlpha ?? DEFAULT_ALPHA
         this.beta = task.mirageBeta ?? DEFAULT_BETA
+        this.julia = task.julia === true
         const w = task.w
         const h = task.h
 
         const frameTopLeftFloat = task.frameTopLeft.map(fixed => fixed.toNumber())
         const frameBottomRightFloat = task.frameBottomRight.map(fixed => fixed.toNumber())
-        const cMax = Math.hypot(
-            Math.max(Math.abs(frameTopLeftFloat[0]), Math.abs(frameBottomRightFloat[0])),
-            Math.max(Math.abs(frameTopLeftFloat[1]), Math.abs(frameBottomRightFloat[1])))
-        this.bailout = bailoutFor(this.alpha, this.beta, cMax)
+        if (this.julia) {
+            this.juliaR = task.juliaSeed[0].toNumber()
+            this.juliaI = task.juliaSeed[1].toNumber()
+            // in julia mode the fixed seed is the only c that occurs
+            this.bailout = bailoutFor(this.alpha, this.beta, Math.hypot(this.juliaR, this.juliaI))
+        } else {
+            const cMax = Math.hypot(
+                Math.max(Math.abs(frameTopLeftFloat[0]), Math.abs(frameBottomRightFloat[0])),
+                Math.max(Math.abs(frameTopLeftFloat[1]), Math.abs(frameBottomRightFloat[1])))
+            this.bailout = bailoutFor(this.alpha, this.beta, cMax)
+        }
         const topLeftFloat = [
             frameTopLeftFloat[0] + task.xOffset * (frameBottomRightFloat[0] - frameTopLeftFloat[0]) / task.frameWidth,
             frameTopLeftFloat[1] + task.yOffset * (frameBottomRightFloat[1] - frameTopLeftFloat[1]) / task.frameHeight
@@ -128,7 +136,9 @@ export class MandelbrotMirage {
         let offset = y * w + x
         let re = rmin + dr * x
         if (smooth) {
-            let iter = this.mirage(re, im, this.max_iter)
+            let iter = this.julia
+                ? this.mirageJulia(re, im, this.juliaR, this.juliaI, this.max_iter)
+                : this.mirage(re, im, this.max_iter)
             let zq = this.lastZq
             let nu = 1
             if (iter > 3) {
@@ -140,8 +150,58 @@ export class MandelbrotMirage {
             smooth[offset] = Math.floor(255 - 255 * nu)
             values[offset] = iter
         } else {
-            values[offset] = this.mirage(re, im, this.max_iter)
+            values[offset] = this.julia
+                ? this.mirageJulia(re, im, this.juliaR, this.juliaI, this.max_iter)
+                : this.mirage(re, im, this.max_iter)
         }
+    }
+
+    /**
+     * Julia variant: the pixel is the starting point z₀ and (jr, ji) is the fixed seed.
+     *
+     * @returns {number} iter
+     */
+    mirageJulia(zr, zi, jr, ji, max_iter) {
+        const alpha = this.alpha
+        const beta = this.beta
+        const bailout = this.bailout
+        const a1 = 1 - alpha
+        let iter = -1
+        let zrq = zr * zr
+        let ziq = zi * zi
+        let zq = 0.0
+        let pr = 0.0
+        let pi = 0.0
+        let period = 8
+        for (;;) {
+            if (iter++ === max_iter) {
+                this.lastZq = 0
+                return 2
+            }
+            zq = zrq + ziq
+            if (zq > bailout) {
+                break
+            }
+            const s = beta / (1 + zq)
+            const wi = (1 - 2 * s) * zi
+            const tr = zrq - wi * wi + jr
+            const ti = 2 * zr * wi + ji
+            zr = a1 * zr + alpha * tr
+            zi = a1 * zi + alpha * ti
+            if (zr === pr && zi === pi) {
+                this.lastZq = 0
+                return 2
+            }
+            if (iter === period) {
+                pr = zr
+                pi = zi
+                period += period
+            }
+            zrq = zr * zr
+            ziq = zi * zi
+        }
+        this.lastZq = zq
+        return iter + 4
     }
 
     /**

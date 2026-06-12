@@ -17,6 +17,12 @@ export class MandelbrotBurningShip {
 
     async process(task) {
         this.max_iter = task.maxIter
+        this.julia = task.julia === true
+        if (this.julia) {
+            this.juliaR = task.juliaSeed[0].toNumber()
+            this.juliaI = task.juliaSeed[1].toNumber()
+            this.juliaBailout = Math.max(128, 2 * Math.hypot(this.juliaR, this.juliaI) + 16)
+        }
         const w = task.w
         const h = task.h
 
@@ -71,7 +77,9 @@ export class MandelbrotBurningShip {
         let offset = y * w + x
         let re = rmin + dr * x
         if (smooth) {
-            let iter = this.burningShip(re, im, this.max_iter, 128)
+            let iter = this.julia
+                ? this.burningShipJulia(re, im, this.juliaR, this.juliaI, this.max_iter, this.juliaBailout)
+                : this.burningShip(re, im, this.max_iter, 128)
             let zq = this.lastZq
             let nu = 1
             if (iter > 3) {
@@ -83,8 +91,50 @@ export class MandelbrotBurningShip {
             smooth[offset] = Math.floor(255 - 255 * nu)
             values[offset] = iter
         } else {
-            values[offset] = this.burningShip(re, im, this.max_iter, 4)
+            values[offset] = this.julia
+                ? this.burningShipJulia(re, im, this.juliaR, this.juliaI, this.max_iter, this.juliaBailout)
+                : this.burningShip(re, im, this.max_iter, 4)
         }
+    }
+
+    /**
+     * Julia variant: the pixel is the starting point z₀ and (jr, ji) is the fixed seed.
+     *
+     * @returns {number} iter
+     */
+    burningShipJulia(zr, zi, jr, ji, max_iter, bailout) {
+        let iter = -1
+        let zrq = zr * zr
+        let ziq = zi * zi
+        let zq = 0.0
+        let pr = 0.0
+        let pi = 0.0
+        let period = 8
+        for (;;) {
+            if (iter++ === max_iter) {
+                this.lastZq = 0
+                return 2
+            }
+            zq = zrq + ziq
+            if (zq > bailout) {
+                break
+            }
+            zi = 2 * Math.abs(zr * zi) + ji
+            zr = zrq - ziq + jr
+            if (zr === pr && zi === pi) {
+                this.lastZq = 0
+                return 2
+            }
+            if (iter === period) {
+                pr = zr
+                pi = zi
+                period += period
+            }
+            zrq = zr * zr
+            ziq = zi * zi
+        }
+        this.lastZq = zq
+        return iter + 4
     }
 
     /**
