@@ -20,6 +20,7 @@ import {MandelbrotPhoenixPerturbation} from "./mandelbrotPhoenixPerturbation.mjs
 import {MandelbrotAbsFamily} from "./mandelbrotAbsFamily.mjs";
 import {MandelbrotGyre} from "./mandelbrotGyre.mjs";
 import {MandelbrotGyrePerturbation} from "./mandelbrotGyrePerturbation.mjs";
+import {MandelbrotLyra} from "./mandelbrotLyra.mjs";
 import {MandelbrotAbsFamilyPerturbation} from "./mandelbrotAbsFamilyPerturbation.mjs";
 import {MandelbrotWebGPU} from "./mandelbrotWebGPU.mjs";
 
@@ -105,6 +106,11 @@ async function initMandelbrotGyrePerturbation() {
     return new MandelbrotGyrePerturbation(ctx)
 }
 
+async function initMandelbrotLyra() {
+    await new Promise(resolve => setTimeout(resolve, 1))
+    return new MandelbrotLyra(ctx)
+}
+
 async function initMandelbrotAbsFamily() {
     await new Promise(resolve => setTimeout(resolve, 1))
     return new MandelbrotAbsFamily(ctx)
@@ -132,6 +138,7 @@ const mandelbrotPhoenixPerturbation = initMandelbrotPhoenixPerturbation();
 const mandelbrotAbsFamily = initMandelbrotAbsFamily();
 const mandelbrotGyre = initMandelbrotGyre();
 const mandelbrotGyrePerturbation = initMandelbrotGyrePerturbation();
+const mandelbrotLyra = initMandelbrotLyra();
 const mandelbrotAbsFamilyPerturbation = initMandelbrotAbsFamilyPerturbation();
 
 onmessage = handleMessage
@@ -159,6 +166,8 @@ async function handleMessage(msg) {
                                     ? (message.requiredPrecision > 58 ? mandelbrotAbsFamilyPerturbation : mandelbrotAbsFamily)
                                     : message.fractal === 'gyre'
                                         ? (message.requiredPrecision > 58 ? mandelbrotGyrePerturbation : mandelbrotGyre)
+                                    : message.fractal === 'lyra'
+                                        ? mandelbrotLyra
                                     : message.requiredPrecision > 1020 && !message.julia // the extended float algorithm has no julia support
                                     ? mandelbrotPerturbationExtFloat
                                     : message.requiredPrecision > 58

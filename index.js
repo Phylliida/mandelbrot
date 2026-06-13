@@ -30,7 +30,15 @@ const FRACTAL_HOME_VIEWS = {
     phoenix: [-0.3, 0],
     absfamily: [-0.5, 0],
     gyre: [-0.5, 0],
+    lyra: [1.8, 1.8, 2.5], // optional 3rd element = home zoom (Lyra's structure lives in a ~1.6-wide box)
     mirage: [-5.9, 0],
+}
+const LYRA_DEFAULT_SEQUENCE = 'AB'
+
+// Cleans a Lyra rhythm string to 1..16 chars of A/B, falling back to the default.
+function cleanLyraSequence(s) {
+    const c = String(s || '').toUpperCase().replace(/[^AB]/g, '')
+    return (c.length >= 1 && c.length <= 16) ? c : LYRA_DEFAULT_SEQUENCE
 }
 const GYRE_DEFAULT_THETA = 90
 const GYRE_DEFAULT_BETA = 1.5
@@ -104,6 +112,7 @@ class Mandelbrot {
         this.absVariant = ABS_DEFAULT_VARIANT
         this.gyreTheta = GYRE_DEFAULT_THETA
         this.gyreBeta = GYRE_DEFAULT_BETA
+        this.lyraSequence = LYRA_DEFAULT_SEQUENCE
         this.juliaMode = false
         this.juliaSeed = null
         this.preJuliaView = null
@@ -243,7 +252,7 @@ class Mandelbrot {
             const w = buffer.width
             const h = buffer.height
             const juliaHash = this.juliaMode ? `J${this.juliaSeed[0].bigInt}:${this.juliaSeed[1].bigInt}` : 'M'
-            const paramHash = `${this.max_iter}-${this.smooth}-${this.fractalType}-${this.mirageAlpha}-${this.mirageBeta}-${this.multibrotDegree}-${this.phoenixQ}-${this.absVariant}-${this.gyreTheta}-${this.gyreBeta}-${juliaHash}`
+            const paramHash = `${this.max_iter}-${this.smooth}-${this.fractalType}-${this.mirageAlpha}-${this.mirageBeta}-${this.multibrotDegree}-${this.phoenixQ}-${this.absVariant}-${this.gyreTheta}-${this.gyreBeta}-${this.lyraSequence}-${juliaHash}`
 
             const frameTopLeft = this.canvas2complex(0, 0)
             // We need to adjust for the case that the width or height is not dividable by the pixel size
@@ -293,6 +302,7 @@ class Mandelbrot {
                         absVariant: this.absVariant,
                         gyreTheta: this.gyreTheta,
                         gyreBeta: this.gyreBeta,
+                        lyraSequence: this.lyraSequence,
                         julia: this.juliaMode,
                         juliaSeed: this.juliaSeed
                     }
@@ -861,6 +871,9 @@ function zoomWithFactor(factor, cooldown) {
     // Only mandelbrot without julia has an extended-float implementation, everything else caps
     // the zoom where the perturbation algorithm runs out of float64 exponent range (about 1e300)
     if ((fractal.fractalType !== 'mandelbrot' || fractal.juliaMode) && factor > 1 && fractal.requiredPrecision > 1000) return
+    // Lyra renders only with the float engine (Lyapunov structure has finite zoom depth), so it
+    // caps where float can still resolve neighbouring pixels in parameter space (about 1e13)
+    if (fractal.fractalType === 'lyra' && factor > 1 && fractal.requiredPrecision > 58) return
     let bigFactor = fxp.fromNumber(factor, fractal.precision);
     const ptr = fractal.canvas2complex(lastX, lastY)
     fractal.setCenter(ptr)
@@ -1034,6 +1047,8 @@ const gyreThetaInput = document.getElementById('gyre-theta-value')
 const gyreBetaSlider = document.getElementById('gyre-beta')
 const gyreBetaInput = document.getElementById('gyre-beta-value')
 const absVariantSelect = document.getElementById('abs-variant')
+const lyraParamsRow = document.getElementById('lyra-params')
+const lyraSequenceInput = document.getElementById('lyra-sequence')
 const multibrotParamsRow = document.getElementById('multibrot-params')
 const multibrotDegreeSlider = document.getElementById('multibrot-degree')
 const multibrotDegreeLabel = document.getElementById('multibrot-degree-label')
@@ -1148,9 +1163,7 @@ function initListeners() {
         fractal.fractalType = event.target.value
         exitJuliaMode()
         // A location in one fractal is meaningless in the other, so start at the fractal's home view
-        const home = FRACTAL_HOME_VIEWS[fractal.fractalType]
-        fractal.setZoom(fxp.fromNumber(1))
-        fractal.setCenter(home.map(v => fxp.fromNumber(v)))
+        applyHomeView(fractal.fractalType)
         updateFractalControls()
         redraw()
     })
@@ -1169,9 +1182,7 @@ function initListeners() {
                 fractal.setZoom(previous.zoom)
                 fractal.setCenter([previous.center[0], previous.center[1]])
             } else {
-                const home = FRACTAL_HOME_VIEWS[fractal.fractalType]
-                fractal.setZoom(fxp.fromNumber(1))
-                fractal.setCenter(home.map(v => fxp.fromNumber(v)))
+                applyHomeView(fractal.fractalType)
             }
         }
         redraw()
@@ -1213,6 +1224,14 @@ function initListeners() {
     absVariantSelect.addEventListener('change', (event) => {
         fractal.absVariant = ABS_VARIANTS[event.target.value] ? event.target.value : ABS_DEFAULT_VARIANT
         redraw()
+    })
+    lyraSequenceInput.addEventListener('change', (event) => {
+        fractal.lyraSequence = cleanLyraSequence(event.target.value)
+        lyraSequenceInput.value = fractal.lyraSequence
+        redraw()
+    })
+    lyraSequenceInput.addEventListener('keydown', (event) => {
+        event.stopPropagation()
     })
     multibrotDegreeSlider.addEventListener('input', () => {
         fractal.multibrotDegree = Math.round(Number(multibrotDegreeSlider.value))
@@ -1333,7 +1352,10 @@ function updateFractalControls() {
     phoenixParamsRow.hidden = fractal.fractalType !== 'phoenix'
     absParamsRow.hidden = fractal.fractalType !== 'absfamily'
     gyreParamsRow.hidden = fractal.fractalType !== 'gyre'
+    lyraParamsRow.hidden = fractal.fractalType !== 'lyra'
     juliaToggle.checked = fractal.juliaMode
+    juliaToggle.disabled = fractal.fractalType === 'lyra' // Julia mode does not apply to Lyra
+    lyraSequenceInput.value = fractal.lyraSequence
     absVariantSelect.value = fractal.absVariant
     gyreThetaSlider.value = fractal.gyreTheta
     gyreThetaInput.value = fractal.gyreTheta
@@ -1344,6 +1366,12 @@ function updateFractalControls() {
     phoenixQSlider.value = fractal.phoenixQ
     phoenixQInput.value = fractal.phoenixQ
     syncMirageInputs()
+}
+
+function applyHomeView(type) {
+    const home = FRACTAL_HOME_VIEWS[type]
+    fractal.setZoom(fxp.fromNumber(home[2] || 1))
+    fractal.setCenter([fxp.fromNumber(home[0]), fxp.fromNumber(home[1])])
 }
 
 function exitJuliaMode() {
@@ -1361,6 +1389,7 @@ function reset() {
     fractal.absVariant = ABS_DEFAULT_VARIANT
     fractal.gyreTheta = GYRE_DEFAULT_THETA
     fractal.gyreBeta = GYRE_DEFAULT_BETA
+    fractal.lyraSequence = LYRA_DEFAULT_SEQUENCE
     exitJuliaMode()
     updateFractalControls()
     fractal.setZoom(fxp.fromNumber(1))
@@ -1416,6 +1445,9 @@ function encodeParams() {
     }
     if (fractal.fractalType === 'gyre') {
         params.gyre = {theta: fractal.gyreTheta, beta: fractal.gyreBeta}
+    }
+    if (fractal.fractalType === 'lyra') {
+        params.lyra = {sequence: fractal.lyraSequence}
     }
     if (fractal.juliaMode) {
         params.julia = fractal.juliaSeed
@@ -1580,6 +1612,7 @@ function initFromParams(params) {
     fractal.absVariant = ABS_VARIANTS[p.absvariant] ? p.absvariant : ABS_DEFAULT_VARIANT
     fractal.gyreTheta = clampMirageValue(Number(p.gyre && p.gyre.theta), -180, 180, GYRE_DEFAULT_THETA)
     fractal.gyreBeta = clampMirageValue(Number(p.gyre && p.gyre.beta), 0, 20, GYRE_DEFAULT_BETA)
+    fractal.lyraSequence = cleanLyraSequence(p.lyra && p.lyra.sequence)
     if (p.julia) {
         fractal.juliaMode = true
         fractal.juliaSeed = p.julia.map(fxp.fromJSON)
