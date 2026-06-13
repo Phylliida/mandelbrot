@@ -1448,25 +1448,16 @@ function exitJuliaMode() {
 }
 
 function reset() {
-    fractal.fractalType = 'mandelbrot'
-    fractal.mirageAlpha = MIRAGE_DEFAULT_ALPHA
-    fractal.mirageBeta = MIRAGE_DEFAULT_BETA
-    fractal.multibrotDegree = MULTIBROT_DEFAULT_DEGREE
-    fractal.phoenixQ = PHOENIX_DEFAULT_Q
-    fractal.absVariant = ABS_DEFAULT_VARIANT
-    fractal.gyreTheta = GYRE_DEFAULT_THETA
-    fractal.gyreBeta = GYRE_DEFAULT_BETA
-    fractal.lyraSequence = LYRA_DEFAULT_SEQUENCE
-    exitJuliaMode()
-    updateFractalControls()
-    fractal.setZoom(fxp.fromNumber(1))
-    fractal.setCenter([fxp.fromNumber(-0.5), fxp.fromNumber(0)])
-    paletteSelector.setDensity(1)
-    paletteSelector.setRotate(0)
-    // paletteSelector.setExp(0.9)
-    if (!setIterations(DEFAULT_ITERATIONS)) {
-        redraw()
+    // Reset only the view (zoom + pan) back to the home view, keeping the fractal choice, its
+    // parameters, Julia mode/seed, palette and iterations.
+    if (fractal.juliaMode) {
+        // the Julia set lives in the z-plane, whose home view is the origin at zoom 1
+        fractal.setZoom(fxp.fromNumber(1))
+        fractal.setCenter([fxp.fromNumber(0), fxp.fromNumber(0)])
+    } else {
+        applyHomeView(fractal.fractalType)
     }
+    redraw()
 }
 
 function iFeelLucky() {
