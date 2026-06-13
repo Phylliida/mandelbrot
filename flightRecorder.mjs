@@ -30,7 +30,8 @@ function pickMimeType() {
  * @param fractal the Mandelbrot app object (zoom/setZoom/renderOnce)
  * @param {HTMLCanvasElement} canvas
  * @param fxp the fixed point module
- * @param {{onProgress: function(string), isCancelled: function(): boolean}} callbacks
+ * @param {{onProgress: function(string, number, number), isCancelled: function(): boolean}} callbacks
+ *        onProgress receives (phase, done, total) with phase 'rendering' or 'encoding'
  * @returns {Promise<Blob|null>} the video, or null when cancelled
  */
 export async function recordFlight(fractal, canvas, fxp, callbacks) {
@@ -65,7 +66,7 @@ export async function recordFlight(fractal, canvas, fxp, callbacks) {
             throw new Error('could not capture a frame from the canvas')
         }
         frameBlobs.push(blob)
-        onProgress(`rendering ${i + 1}/${frames}`)
+        onProgress('rendering', i + 1, frames)
     }
 
     // phase 2: replay the frames at a fixed rate and record the replay
@@ -89,7 +90,7 @@ export async function recordFlight(fractal, canvas, fxp, callbacks) {
         const bitmap = await createImageBitmap(frameBlobs[i])
         context.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
         bitmap.close()
-        onProgress(`encoding ${i + 1}/${frameBlobs.length}`)
+        onProgress('encoding', i + 1, frameBlobs.length)
         nextFrameAt += frameInterval
         const wait = nextFrameAt - performance.now()
         if (wait > 0) {
