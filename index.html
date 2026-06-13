@@ -89,6 +89,22 @@
                     <label for="supersample" class="form-check-label">Supersample</label>
                 </div>
             </div>
+            <div id="julia-params" class="mb-2 g-1 row" hidden>
+                <div class="col col-sm-6" data-bs-toggle="tooltip" data-bs-placement="left" title="Real part (x) of the Julia seed c. Drag to morph the Julia set">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <label for="julia-x-value" class="form-label mb-0">Julia x</label>
+                        <input id="julia-x-value" type="number" class="form-control form-control-sm mirage-value-input" step="any" value="0"/>
+                    </div>
+                    <input id="julia-x" type="range" class="form-range" min="-2" max="2" step="0.0005" value="0"/>
+                </div>
+                <div class="col col-sm-6" data-bs-toggle="tooltip" data-bs-placement="left" title="Imaginary part (i) of the Julia seed c. Drag to morph the Julia set">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <label for="julia-i-value" class="form-label mb-0">Julia i</label>
+                        <input id="julia-i-value" type="number" class="form-control form-control-sm mirage-value-input" step="any" value="0"/>
+                    </div>
+                    <input id="julia-i" type="range" class="form-range" min="-2" max="2" step="0.0005" value="0"/>
+                </div>
+            </div>
             <div id="abs-params" class="mb-2 g-1 row" hidden>
                 <div class="col col-sm-6" data-bs-toggle="tooltip" data-bs-placement="left" title="Where the absolute values are applied in z² + c">
                     <select id="abs-variant" class="form-select form-select-sm">
