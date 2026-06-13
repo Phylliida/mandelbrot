@@ -7,6 +7,7 @@ import * as favorites from './favorites.js'
 import * as mgpu from './mandelbrotWebGPU.mjs'
 import * as pngMeta from './pngMetadata.mjs'
 import {ABS_VARIANTS} from './mandelbrotAbsFamily.mjs'
+import {recordFlight} from './flightRecorder.mjs'
 import {WorkerContext} from "./workerContext.mjs";
 
 const SQUARE_SIZE = 32 // must be even or -1 for full-frame tasks
@@ -90,6 +91,8 @@ class Mandelbrot {
         this.max_iter = DEFAULT_ITERATIONS
         this.smooth = true
         this.useGpu = false
+        this.supersample = false
+        this.recordingFlight = false
         this.fractalType = 'mandelbrot'
         this.mirageAlpha = MIRAGE_DEFAULT_ALPHA
         this.mirageBeta = MIRAGE_DEFAULT_BETA
@@ -148,7 +151,7 @@ class Mandelbrot {
 
     // The WebGPU implementation only renders the classic Mandelbrot set
     gpuActive() {
-        return this.useGpu && this.fractalType === 'mandelbrot' && !this.juliaMode
+        return this.useGpu && this.fractalType === 'mandelbrot' && !this.juliaMode && !this.recordingFlight
     }
 
     _updatePrecision() {
@@ -172,8 +175,11 @@ class Mandelbrot {
         this.width = this.canvas.width
         this.height = this.canvas.height
         this.offscreens = []
-        for (let scale = MAX_PIXEL_SIZE; scale >= MIN_PIXEL_SIZE; scale /= 2) {
-            let offscreen = new Offscreen(this.canvas, scale, scale === MAX_PIXEL_SIZE, scale === MIN_PIXEL_SIZE)
+        // with supersampling a final pass at half pixel size (double resolution) is added,
+        // which is drawn back to the canvas with smoothing for anti-aliasing
+        const minPixelSize = this.supersample ? MIN_PIXEL_SIZE / 2 : MIN_PIXEL_SIZE
+        for (let scale = MAX_PIXEL_SIZE; scale >= minPixelSize; scale /= 2) {
+            let offscreen = new Offscreen(this.canvas, scale, scale === MAX_PIXEL_SIZE, scale === minPixelSize)
             this.offscreens.push(offscreen)
         }
     }
@@ -265,7 +271,9 @@ class Mandelbrot {
                         frameBottomRight: frameBottomRight,
                         paramHash: paramHash,
                         resetCaches: resetCaches,
-                        skipTopLeft: this.jobLevel > 0,
+                        // the supersample pass computes all pixels, the transparent-pixel
+                        // compositing trick would pollute the downscale averages
+                        skipTopLeft: this.jobLevel > 0 && screen.scale >= 1,
                         smooth: this.smooth,
                         maxIter: this.max_iter,
                         precision: this.precision,
@@ -291,6 +299,11 @@ class Mandelbrot {
                 const time = this.stats.time
                 const hpPercent = this.stats.timeHighPrecision / time * 100
                 console.log(`Calculation time: ${this.stats.time.toFixed(0)}ms (${hpPercent.toFixed(0)}% in ${this.stats.highPrecisionCalculations} high precision points), ${this.stats.lowPrecisionMisses} low precision misses`)
+            }
+            if (this.frameResolve) {
+                const resolve = this.frameResolve
+                this.frameResolve = null
+                resolve()
             }
         }
     }
@@ -346,7 +359,7 @@ class Mandelbrot {
         this._revokeJobToken()
         this._createJobToken();
 
-        const screen = this.offscreens[this.offscreens.length - 1]
+        const screen = this.offscreens.find(s => s.scale === 1) || this.offscreens[this.offscreens.length - 1]
         const w = screen.buffer.width
         const h = screen.buffer.height
 
@@ -392,7 +405,7 @@ class Mandelbrot {
             return
         }
 
-        const screen = this.offscreens[this.offscreens.length - 1]
+        const screen = this.offscreens.find(s => s.scale === 1) || this.offscreens[this.offscreens.length - 1]
         screen.values.set(answer.values)
         if (this.smooth) {
             screen.smooth.set(answer.smooth)
@@ -416,6 +429,23 @@ class Mandelbrot {
         this.resetStats()
         // console.log('Rendering...')
         this.startNextJob(resetCaches)
+    }
+
+    /**
+     * Renders only the final (full resolution) pass and resolves when it is complete.
+     * Used by the flight recorder, which needs one finished frame at a time.
+     */
+    renderOnce() {
+        return new Promise(resolve => {
+            this.taskqueue.length = 0
+            this.jobId++
+            this.jobLevel = this.offscreens.length - 2
+            this.jobStartTime = performance.now()
+            this.permalinkUpdated = true // suppress permalink updates while recording
+            this.resetStats()
+            this.frameResolve = resolve
+            this.startNextJob(false)
+        })
     }
 
     // x and y are canvas integer, returns a fixed-point complex number
@@ -487,7 +517,11 @@ class Offscreen {
         }
 
         this.offscreencontext.putImageData(this.buffer, 0, 0)
-        this.maincontext.imageSmoothingEnabled = false
+        // upscale passes draw blocky pixels, the supersample pass downscales with smoothing
+        this.maincontext.imageSmoothingEnabled = this.scale < 1
+        if (this.scale < 1) {
+            this.maincontext.imageSmoothingQuality = 'high'
+        }
         this.maincontext.drawImage(this.offscreen, 0, 0, this.offscreen.width * this.scale, this.offscreen.height * this.scale)
         if (withSmooth) {
             this.smoothscreencontext.putImageData(this.smoothbuffer, 0, 0)
@@ -754,6 +788,9 @@ const fractal = new Mandelbrot(canvasElement, new ProgressMonitor(progressElemen
 let redrawTimeout = null;
 
 async function redraw(resetCaches, cooldown) {
+    if (fractal.recordingFlight) {
+        return // the recorder owns the canvas and the render pipeline
+    }
     showZoomFactor()
     if (redrawTimeout) {
         clearTimeout(redrawTimeout)
@@ -790,6 +827,7 @@ function zoomWithClicks(clicks, cooldown) {
 }
 
 function zoomWithFactor(factor, cooldown) {
+    if (fractal.recordingFlight) return
     const lowerBound = MIN_ZOOM.withScale(fractal.precision)
     if (fractal.zoom.leq(lowerBound) && factor < 1) return
     // Only mandelbrot without julia has an extended-float implementation, everything else caps
@@ -830,6 +868,7 @@ function setIterations(value) {
 }
 
 function onMouseDown(evt) {
+    if (fractal.recordingFlight) return
     updateMousePos(evt)
     dragStart = [lastX, lastY]
 }
@@ -1187,6 +1226,14 @@ function initListeners() {
     document.getElementById("download-image").addEventListener('click', (event) => {
         downloadImage()
     })
+    document.getElementById("supersample").addEventListener('change', (event) => {
+        fractal.supersample = event.target.checked
+        fractal.resized()
+        redraw()
+    })
+    document.getElementById("record-flight").addEventListener('click', (event) => {
+        toggleFlightRecording()
+    })
     const resumeFileInput = document.getElementById("resume-file")
     document.getElementById("resume-image").addEventListener('click', (event) => {
         resumeFileInput.click()
@@ -1341,6 +1388,47 @@ function downloadImage() {
     }, 'image/png')
 }
 
+async function toggleFlightRecording() {
+    if (fractal.recordingFlight) {
+        fractal.flightCancelled = true
+        return
+    }
+    if (fractal.zoom.bits() < 2) {
+        alert('Zoom in somewhere first, then record the flight from 1x down to there.')
+        return
+    }
+    const button = document.getElementById('record-flight')
+    const originalZoom = fractal.zoom
+    fractal.recordingFlight = true
+    fractal.flightCancelled = false
+    button.innerText = 'Cancel recording'
+    try {
+        const video = await recordFlight(fractal, canvasElement, fxp, {
+            onProgress: (text) => {
+                button.innerText = `${text} — click to cancel`
+            },
+            isCancelled: () => fractal.flightCancelled,
+        })
+        if (video) {
+            const url = URL.createObjectURL(video)
+            const anchor = document.createElement('a')
+            anchor.href = url
+            const extension = video.type.includes('mp4') ? 'mp4' : 'webm'
+            anchor.download = imageFilename().replace('.png', `-flight.${extension}`)
+            anchor.click()
+            setTimeout(() => URL.revokeObjectURL(url), 10000)
+        }
+    } catch (e) {
+        console.log(`Flight recording failed: ${e}`)
+        alert(`Could not record the flight: ${e.message}`)
+    } finally {
+        fractal.recordingFlight = false
+        button.innerText = 'Record flight'
+        fractal.setZoom(originalZoom)
+        redraw()
+    }
+}
+
 async function resumeFromImage(file) {
     const params = pngMeta.extractText(await file.arrayBuffer(), PNG_PARAMS_KEYWORD)
     if (!params) {
@@ -1382,6 +1470,11 @@ function init() {
     }
     showSettingsContainer()
     initListeners()
+    // small hook for tests and power users
+    window.mandelbrotApp = {
+        fractal,
+        recordFlight: (callbacks) => recordFlight(fractal, canvasElement, fxp, callbacks),
+    }
     redraw()
 }
 
