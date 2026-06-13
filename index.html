@@ -74,6 +74,7 @@
                         <option value="phoenix">Phoenix</option>
                         <option value="absfamily">Abs variants</option>
                         <option value="gyre">Gyre</option>
+                        <option value="lyra">Lyra</option>
                         <option value="mirage">Mirage</option>
                     </select>
                 </div>
@@ -114,6 +115,14 @@
                         <input id="gyre-beta-value" type="number" class="form-control form-control-sm mirage-value-input" step="any" value="1.5"/>
                     </div>
                     <input id="gyre-beta" type="range" class="form-range" min="0" max="5" step="0.05" value="1.5"/>
+                </div>
+            </div>
+            <div id="lyra-params" class="mb-2 g-1 row" hidden>
+                <div class="col col-sm-12" data-bs-toggle="tooltip" data-bs-placement="left" title="Rhythm string of A's and B's: which parameter (a or b) drives each step of the cubic map">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <label for="lyra-sequence" class="form-label mb-0">Rhythm</label>
+                        <input id="lyra-sequence" type="text" class="form-control form-control-sm" style="width: 9em; text-align: right;" maxlength="16" value="AB"/>
+                    </div>
                 </div>
             </div>
             <div id="multibrot-params" class="mb-2 g-1 row" hidden>
