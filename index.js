@@ -272,8 +272,10 @@ class Mandelbrot {
                         paramHash: paramHash,
                         resetCaches: resetCaches,
                         // the supersample pass computes all pixels, the transparent-pixel
-                        // compositing trick would pollute the downscale averages
-                        skipTopLeft: this.jobLevel > 0 && screen.scale >= 1,
+                        // compositing trick would pollute the downscale averages. Single-pass
+                        // renders (flight recording) also compute all pixels because there are
+                        // no earlier passes of the same view to composite over.
+                        skipTopLeft: this.jobLevel > 0 && screen.scale >= 1 && !this.frameResolve,
                         smooth: this.smooth,
                         maxIter: this.max_iter,
                         precision: this.precision,
@@ -318,7 +320,9 @@ class Mandelbrot {
         if (task.jobToken !== this.jobToken) {
             return // ignore results from old render jobs
         }
-        this.progress.update()
+        if (!this.recordingFlight) {
+            this.progress.update() // the flight recorder has its own progress bar
+        }
         if (answer.stats) {
             this.stats.time += answer.stats.time
             this.stats.timeHighPrecision += answer.stats.timeHighPrecision
@@ -427,8 +431,19 @@ class Mandelbrot {
         this.jobStartTime = performance.now()
         this.permalinkUpdated = false
         this.resetStats()
+        this._resolveOrphanedFrame()
         // console.log('Rendering...')
         this.startNextJob(resetCaches)
+    }
+
+    // A render superseding a pending renderOnce() cancels its tasks via the job token, so the
+    // frame promise must be resolved here or it would never settle
+    _resolveOrphanedFrame() {
+        if (this.frameResolve) {
+            const resolve = this.frameResolve
+            this.frameResolve = null
+            resolve()
+        }
     }
 
     /**
@@ -443,6 +458,7 @@ class Mandelbrot {
             this.jobStartTime = performance.now()
             this.permalinkUpdated = true // suppress permalink updates while recording
             this.resetStats()
+            this._resolveOrphanedFrame()
             this.frameResolve = resolve
             this.startNextJob(false)
         })
@@ -784,6 +800,11 @@ function createPreviewCanvas(palette, size) {
 const paletteSelector = new PaletteSelector();
 
 const fractal = new Mandelbrot(canvasElement, new ProgressMonitor(progressElement), paletteSelector)
+
+// Captured synchronously at module load: the first render can finish and update the permalink
+// before init() runs (the load event can be delayed by slow stylesheets), which would otherwise
+// overwrite the requested location with the default view before it was ever read.
+const initialUrlParams = new URL(window.location).searchParams.get('params')
 
 let redrawTimeout = null;
 
@@ -1388,6 +1409,24 @@ function downloadImage() {
     }, 'image/png')
 }
 
+// Updates the flight recording progress bar. The rendering phase fills the first half,
+// the encoding phase the second half. A null phase hides the bar.
+function updateFlightProgress(phase, done, total) {
+    const row = document.getElementById('flight-progress-row')
+    const bar = document.getElementById('flight-progress-bar')
+    if (!phase) {
+        row.hidden = true
+        bar.style.width = '0%'
+        bar.innerText = ''
+        return
+    }
+    row.hidden = false
+    const offset = phase === 'encoding' ? 50 : 0
+    const percent = Math.round(offset + (done / total) * 50)
+    bar.style.width = `${percent}%`
+    bar.innerText = `${phase} ${done}/${total}`
+}
+
 async function toggleFlightRecording() {
     if (fractal.recordingFlight) {
         fractal.flightCancelled = true
@@ -1402,11 +1441,11 @@ async function toggleFlightRecording() {
     fractal.recordingFlight = true
     fractal.flightCancelled = false
     button.innerText = 'Cancel recording'
+    updateFlightProgress('rendering', 0, 1)
+    document.getElementById('progress-canvas').style.display = 'none'
     try {
         const video = await recordFlight(fractal, canvasElement, fxp, {
-            onProgress: (text) => {
-                button.innerText = `${text} — click to cancel`
-            },
+            onProgress: updateFlightProgress,
             isCancelled: () => fractal.flightCancelled,
         })
         if (video) {
@@ -1424,6 +1463,7 @@ async function toggleFlightRecording() {
     } finally {
         fractal.recordingFlight = false
         button.innerText = 'Record flight'
+        updateFlightProgress(null)
         fractal.setZoom(originalZoom)
         redraw()
     }
@@ -1454,10 +1494,8 @@ function initUI() {
 // on load, check if there is a permalink in the url
 function init() {
     initUI()
-    const url = new URL(window.location)
-    const params = url.searchParams.get('params')
-    if (params) {
-        initFromParams(params)
+    if (initialUrlParams) {
+        initFromParams(initialUrlParams)
     }
     // resizeTmpCanvas()
     onResize()
@@ -1474,6 +1512,7 @@ function init() {
     window.mandelbrotApp = {
         fractal,
         recordFlight: (callbacks) => recordFlight(fractal, canvasElement, fxp, callbacks),
+        updateFlightProgress,
     }
     redraw()
 }
