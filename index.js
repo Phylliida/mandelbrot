@@ -29,8 +29,11 @@ const FRACTAL_HOME_VIEWS = {
     tricorn: [-0.25, 0],
     phoenix: [-0.3, 0],
     absfamily: [-0.5, 0],
+    gyre: [-0.5, 0],
     mirage: [-5.9, 0],
 }
+const GYRE_DEFAULT_THETA = 90
+const GYRE_DEFAULT_BETA = 1.5
 const ABS_DEFAULT_VARIANT = 'celtic'
 const MULTIBROT_DEFAULT_DEGREE = 3
 const PHOENIX_DEFAULT_Q = -0.5
@@ -99,6 +102,8 @@ class Mandelbrot {
         this.multibrotDegree = MULTIBROT_DEFAULT_DEGREE
         this.phoenixQ = PHOENIX_DEFAULT_Q
         this.absVariant = ABS_DEFAULT_VARIANT
+        this.gyreTheta = GYRE_DEFAULT_THETA
+        this.gyreBeta = GYRE_DEFAULT_BETA
         this.juliaMode = false
         this.juliaSeed = null
         this.preJuliaView = null
@@ -238,7 +243,7 @@ class Mandelbrot {
             const w = buffer.width
             const h = buffer.height
             const juliaHash = this.juliaMode ? `J${this.juliaSeed[0].bigInt}:${this.juliaSeed[1].bigInt}` : 'M'
-            const paramHash = `${this.max_iter}-${this.smooth}-${this.fractalType}-${this.mirageAlpha}-${this.mirageBeta}-${this.multibrotDegree}-${this.phoenixQ}-${this.absVariant}-${juliaHash}`
+            const paramHash = `${this.max_iter}-${this.smooth}-${this.fractalType}-${this.mirageAlpha}-${this.mirageBeta}-${this.multibrotDegree}-${this.phoenixQ}-${this.absVariant}-${this.gyreTheta}-${this.gyreBeta}-${juliaHash}`
 
             const frameTopLeft = this.canvas2complex(0, 0)
             // We need to adjust for the case that the width or height is not dividable by the pixel size
@@ -286,6 +291,8 @@ class Mandelbrot {
                         multibrotDegree: this.multibrotDegree,
                         phoenixQ: this.phoenixQ,
                         absVariant: this.absVariant,
+                        gyreTheta: this.gyreTheta,
+                        gyreBeta: this.gyreBeta,
                         julia: this.juliaMode,
                         juliaSeed: this.juliaSeed
                     }
@@ -1021,6 +1028,11 @@ const smoothToggle = document.getElementById('smooth')
 const fractalSelect = document.getElementById('fractal-select')
 const juliaToggle = document.getElementById('julia')
 const absParamsRow = document.getElementById('abs-params')
+const gyreParamsRow = document.getElementById('gyre-params')
+const gyreThetaSlider = document.getElementById('gyre-theta')
+const gyreThetaInput = document.getElementById('gyre-theta-value')
+const gyreBetaSlider = document.getElementById('gyre-beta')
+const gyreBetaInput = document.getElementById('gyre-beta-value')
 const absVariantSelect = document.getElementById('abs-variant')
 const multibrotParamsRow = document.getElementById('multibrot-params')
 const multibrotDegreeSlider = document.getElementById('multibrot-degree')
@@ -1167,6 +1179,37 @@ function initListeners() {
     fractalSelect.addEventListener('keydown', (event) => {
         event.stopPropagation()
     })
+    gyreThetaSlider.addEventListener('input', () => {
+        fractal.gyreTheta = Number(gyreThetaSlider.value)
+        gyreThetaInput.value = fractal.gyreTheta
+        redraw(false, 120)
+    })
+    gyreThetaSlider.addEventListener('change', () => {
+        redraw()
+    })
+    gyreThetaInput.addEventListener('change', () => {
+        fractal.gyreTheta = clampMirageValue(Number(gyreThetaInput.value), -180, 180, fractal.gyreTheta)
+        updateFractalControls()
+        redraw()
+    })
+    gyreBetaSlider.addEventListener('input', () => {
+        fractal.gyreBeta = Number(gyreBetaSlider.value)
+        gyreBetaInput.value = fractal.gyreBeta
+        redraw(false, 120)
+    })
+    gyreBetaSlider.addEventListener('change', () => {
+        redraw()
+    })
+    gyreBetaInput.addEventListener('change', () => {
+        fractal.gyreBeta = clampMirageValue(Number(gyreBetaInput.value), 0, 20, fractal.gyreBeta)
+        updateFractalControls()
+        redraw()
+    })
+    for (const input of [gyreThetaInput, gyreBetaInput]) {
+        input.addEventListener('keydown', (event) => {
+            event.stopPropagation()
+        })
+    }
     absVariantSelect.addEventListener('change', (event) => {
         fractal.absVariant = ABS_VARIANTS[event.target.value] ? event.target.value : ABS_DEFAULT_VARIANT
         redraw()
@@ -1289,8 +1332,13 @@ function updateFractalControls() {
     multibrotParamsRow.hidden = fractal.fractalType !== 'multibrot'
     phoenixParamsRow.hidden = fractal.fractalType !== 'phoenix'
     absParamsRow.hidden = fractal.fractalType !== 'absfamily'
+    gyreParamsRow.hidden = fractal.fractalType !== 'gyre'
     juliaToggle.checked = fractal.juliaMode
     absVariantSelect.value = fractal.absVariant
+    gyreThetaSlider.value = fractal.gyreTheta
+    gyreThetaInput.value = fractal.gyreTheta
+    gyreBetaSlider.value = fractal.gyreBeta
+    gyreBetaInput.value = fractal.gyreBeta
     multibrotDegreeSlider.value = fractal.multibrotDegree
     multibrotDegreeLabel.innerText = `Degree: ${fractal.multibrotDegree}`
     phoenixQSlider.value = fractal.phoenixQ
@@ -1311,6 +1359,8 @@ function reset() {
     fractal.multibrotDegree = MULTIBROT_DEFAULT_DEGREE
     fractal.phoenixQ = PHOENIX_DEFAULT_Q
     fractal.absVariant = ABS_DEFAULT_VARIANT
+    fractal.gyreTheta = GYRE_DEFAULT_THETA
+    fractal.gyreBeta = GYRE_DEFAULT_BETA
     exitJuliaMode()
     updateFractalControls()
     fractal.setZoom(fxp.fromNumber(1))
@@ -1363,6 +1413,9 @@ function encodeParams() {
     }
     if (fractal.fractalType === 'absfamily') {
         params.absvariant = fractal.absVariant
+    }
+    if (fractal.fractalType === 'gyre') {
+        params.gyre = {theta: fractal.gyreTheta, beta: fractal.gyreBeta}
     }
     if (fractal.juliaMode) {
         params.julia = fractal.juliaSeed
@@ -1525,6 +1578,8 @@ function initFromParams(params) {
     fractal.multibrotDegree = Math.round(clampMirageValue(Number(p.multibrot && p.multibrot.degree), 2, 8, MULTIBROT_DEFAULT_DEGREE))
     fractal.phoenixQ = clampMirageValue(Number(p.phoenix && p.phoenix.q), PHOENIX_Q_MIN, PHOENIX_Q_MAX, PHOENIX_DEFAULT_Q)
     fractal.absVariant = ABS_VARIANTS[p.absvariant] ? p.absvariant : ABS_DEFAULT_VARIANT
+    fractal.gyreTheta = clampMirageValue(Number(p.gyre && p.gyre.theta), -180, 180, GYRE_DEFAULT_THETA)
+    fractal.gyreBeta = clampMirageValue(Number(p.gyre && p.gyre.beta), 0, 20, GYRE_DEFAULT_BETA)
     if (p.julia) {
         fractal.juliaMode = true
         fractal.juliaSeed = p.julia.map(fxp.fromJSON)
