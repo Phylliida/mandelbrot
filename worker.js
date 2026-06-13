@@ -18,6 +18,8 @@ import {MandelbrotMultibrotPerturbation} from "./mandelbrotMultibrotPerturbation
 import {MandelbrotPhoenix} from "./mandelbrotPhoenix.mjs";
 import {MandelbrotPhoenixPerturbation} from "./mandelbrotPhoenixPerturbation.mjs";
 import {MandelbrotAbsFamily} from "./mandelbrotAbsFamily.mjs";
+import {MandelbrotGyre} from "./mandelbrotGyre.mjs";
+import {MandelbrotGyrePerturbation} from "./mandelbrotGyrePerturbation.mjs";
 import {MandelbrotAbsFamilyPerturbation} from "./mandelbrotAbsFamilyPerturbation.mjs";
 import {MandelbrotWebGPU} from "./mandelbrotWebGPU.mjs";
 
@@ -93,6 +95,16 @@ async function initMandelbrotPhoenixPerturbation() {
     return new MandelbrotPhoenixPerturbation(ctx)
 }
 
+async function initMandelbrotGyre() {
+    await new Promise(resolve => setTimeout(resolve, 1))
+    return new MandelbrotGyre(ctx)
+}
+
+async function initMandelbrotGyrePerturbation() {
+    await new Promise(resolve => setTimeout(resolve, 1))
+    return new MandelbrotGyrePerturbation(ctx)
+}
+
 async function initMandelbrotAbsFamily() {
     await new Promise(resolve => setTimeout(resolve, 1))
     return new MandelbrotAbsFamily(ctx)
@@ -118,6 +130,8 @@ const mandelbrotMultibrotPerturbation = initMandelbrotMultibrotPerturbation();
 const mandelbrotPhoenix = initMandelbrotPhoenix();
 const mandelbrotPhoenixPerturbation = initMandelbrotPhoenixPerturbation();
 const mandelbrotAbsFamily = initMandelbrotAbsFamily();
+const mandelbrotGyre = initMandelbrotGyre();
+const mandelbrotGyrePerturbation = initMandelbrotGyrePerturbation();
 const mandelbrotAbsFamilyPerturbation = initMandelbrotAbsFamilyPerturbation();
 
 onmessage = handleMessage
@@ -143,6 +157,8 @@ async function handleMessage(msg) {
                                 ? (message.requiredPrecision > 58 ? mandelbrotPhoenixPerturbation : mandelbrotPhoenix)
                                 : message.fractal === 'absfamily'
                                     ? (message.requiredPrecision > 58 ? mandelbrotAbsFamilyPerturbation : mandelbrotAbsFamily)
+                                    : message.fractal === 'gyre'
+                                        ? (message.requiredPrecision > 58 ? mandelbrotGyrePerturbation : mandelbrotGyre)
                                     : message.requiredPrecision > 1020 && !message.julia // the extended float algorithm has no julia support
                                     ? mandelbrotPerturbationExtFloat
                                     : message.requiredPrecision > 58
