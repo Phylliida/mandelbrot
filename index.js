@@ -178,6 +178,16 @@ class Mandelbrot {
         } else {
             this.precision = Math.max(58, this.requiredPrecision)
         }
+        // High-degree multibrot orbits are far more sensitive (the local multiplier is ~d·|z|^(d−1)),
+        // so the precision implied by the zoom alone is not enough to compute the reference orbit
+        // accurately at deep iteration counts — the result is blocky glitches. For degree >= 5 add
+        // precision scaled by degree and iteration count (~0.02·(d−2) bits/iteration, measured
+        // empirically); lower degrees render correctly without it. Only affects the deep/perturbation
+        // path (the routing requiredPrecision is unchanged). Keep the >=5 threshold in sync with
+        // HIGH_DEGREE in mandelbrotMultibrotPerturbation.mjs.
+        if (this.fractalType === 'multibrot' && this.multibrotDegree >= 5 && this.requiredPrecision > 58) {
+            this.precision += Math.ceil(0.02 * (this.multibrotDegree - 2) * this.max_iter)
+        }
         this.zoom = this.zoom.withScale(this.precision)
         this.center[0] = this.center[0].withScale(this.precision)
         this.center[1] = this.center[1].withScale(this.precision)

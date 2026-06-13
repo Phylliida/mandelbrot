@@ -15,6 +15,11 @@
 import {WorkerContext, smoothen} from "./workerContext.mjs";
 import {DEFAULT_DEGREE} from "./mandelbrotMultibrot.mjs";
 
+// Degrees at and above this use the extra decorrelation glitch test and the precision boost.
+// Below it the standard perturbation already renders correctly and quickly. Keep in sync with
+// the precision boost in index.js _updatePrecision.
+export const HIGH_DEGREE = 5
+
 function binomials(d) {
     const b = [1]
     for (let k = 1; k <= d; k++) {
@@ -39,6 +44,11 @@ export class MandelbrotMultibrotPerturbation {
         this.max_iter = task.maxIter
         this.degree = task.multibrotDegree ?? DEFAULT_DEGREE
         this.logDegree = Math.log(this.degree)
+        // The extra |z| < |ε| decorrelation glitch test is only needed at high degree, where the
+        // perturbation decorrelates too fast for the Pauldelbrot test. At low degree the standard
+        // perturbation is already exact, so enabling it there only wastes references (it would
+        // recompute many pixels for no gain). Factor 0 disables the term (zzq < 0 never fires).
+        this.decorrFactor = this.degree >= HIGH_DEGREE ? 1 : 0
         const w = task.w
         const h = task.h
 
@@ -235,7 +245,7 @@ export class MandelbrotMultibrotPerturbation {
             const zzr = X + u
             const zzi = Y + v
             zzq = zzr * zzr + zzi * zzi
-            if (zzq < zs[base + 2 * d]) {
+            if (zzq < zs[base + 2 * d] || zzq < (u * u + v * v) * this.decorrFactor) {
                 this.lastZq = 0
                 return -1
             }
