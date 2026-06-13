@@ -19,7 +19,10 @@ const MIN_PIXEL_SIZE = 1
 const MAX_PIXEL_SIZE = 16
 
 
-const MIN_ZOOM = fxp.fromNumber(1)
+// Zoom 1 frames the Mandelbrot set, but other fractals (Lyra's off-origin box, the wide Mirage
+// set) are larger than the frame at zoom 1, so we allow zooming out well below it. The float
+// engines floor precision at 58, which handles these wide low-zoom views fine.
+const MIN_ZOOM = fxp.fromNumber(1 / 1024)
 
 // Each fractal lives in its own part of the complex plane
 const FRACTAL_HOME_VIEWS = {
@@ -846,11 +849,20 @@ async function redraw(resetCaches, cooldown) {
 }
 
 function showZoomFactor() {
-    const zoom = fractal.zoom.bigIntValue()
-    const zoomStr = zoom.toString()
-    const zoomExp = zoomStr.length - 1
-    const zoomMantissa = zoomStr[0] + '.' + zoomStr.substring(1, 3)
-    document.getElementById('zoomValue').innerText = `${zoomMantissa}e${zoomExp}`
+    const intVal = fractal.zoom.bigIntValue()
+    let text
+    if (intVal > 0n) {
+        // zoom >= 1, possibly far beyond float range (deep zoom) — format from the integer digits
+        const zoomStr = intVal.toString()
+        const zoomExp = zoomStr.length - 1
+        const zoomMantissa = zoomStr[0] + '.' + zoomStr.substring(1, 3)
+        text = `${zoomMantissa}e${zoomExp}`
+    } else {
+        // zoom < 1 (zoomed out below the Mandelbrot frame) — always within float range
+        const n = fractal.zoom.toNumber()
+        text = n > 0 ? n.toExponential(2) : '0'
+    }
+    document.getElementById('zoomValue').innerText = text
 }
 
 let lastX = canvasElement.width / 2
@@ -1040,6 +1052,15 @@ const fullScreenButton = document.getElementById('fullscreen')
 const smoothToggle = document.getElementById('smooth')
 const fractalSelect = document.getElementById('fractal-select')
 const juliaToggle = document.getElementById('julia')
+const juliaParamsRow = document.getElementById('julia-params')
+const juliaXSlider = document.getElementById('julia-x')
+const juliaXInput = document.getElementById('julia-x-value')
+const juliaISlider = document.getElementById('julia-i')
+const juliaIInput = document.getElementById('julia-i-value')
+// The Julia seed sliders span +/- this around an adaptive base (set to the captured seed), so they
+// work wherever a fractal's set lives (Mandelbrot seeds near 0, the Mirage set near -5.9, ...).
+const JULIA_SLIDER_SPAN = 2
+let juliaSliderBase = [0, 0]
 const absParamsRow = document.getElementById('abs-params')
 const gyreParamsRow = document.getElementById('gyre-params')
 const gyreThetaSlider = document.getElementById('gyre-theta')
@@ -1173,6 +1194,7 @@ function initListeners() {
             fractal.juliaSeed = [fractal.center[0], fractal.center[1]]
             fractal.preJuliaView = {center: [fractal.center[0], fractal.center[1]], zoom: fractal.zoom}
             fractal.juliaMode = true
+            recenterJuliaSliders()
             fractal.setZoom(fxp.fromNumber(1))
             fractal.setCenter([fxp.fromNumber(0), fxp.fromNumber(0)])
         } else {
@@ -1185,8 +1207,37 @@ function initListeners() {
                 applyHomeView(fractal.fractalType)
             }
         }
+        updateFractalControls()
         redraw()
     })
+    function onJuliaSeedSlider(slider, input, index) {
+        if (!fractal.juliaMode || !fractal.juliaSeed) return
+        const v = Number(slider.value)
+        const seed = [fractal.juliaSeed[0], fractal.juliaSeed[1]]
+        seed[index] = fxp.fromNumber(v)
+        fractal.juliaSeed = seed
+        input.value = v
+        redraw(false, 120)
+    }
+    function onJuliaSeedInput(slider, input, index) {
+        if (!fractal.juliaMode || !fractal.juliaSeed) return
+        const v = clampMirageValue(Number(input.value), -100, 100, index === 0 ? juliaSeedRe() : juliaSeedIm())
+        const seed = [fractal.juliaSeed[0], fractal.juliaSeed[1]]
+        seed[index] = fxp.fromNumber(v)
+        fractal.juliaSeed = seed
+        recenterJuliaSliders() // typed value may be off-slider, recenter the slider around it
+        updateFractalControls()
+        redraw()
+    }
+    juliaXSlider.addEventListener('input', () => onJuliaSeedSlider(juliaXSlider, juliaXInput, 0))
+    juliaISlider.addEventListener('input', () => onJuliaSeedSlider(juliaISlider, juliaIInput, 1))
+    juliaXSlider.addEventListener('change', () => redraw())
+    juliaISlider.addEventListener('change', () => redraw())
+    juliaXInput.addEventListener('change', () => onJuliaSeedInput(juliaXSlider, juliaXInput, 0))
+    juliaIInput.addEventListener('change', () => onJuliaSeedInput(juliaISlider, juliaIInput, 1))
+    for (const input of [juliaXInput, juliaIInput]) {
+        input.addEventListener('keydown', (event) => event.stopPropagation())
+    }
     fractalSelect.addEventListener('keydown', (event) => {
         event.stopPropagation()
     })
@@ -1355,6 +1406,18 @@ function updateFractalControls() {
     lyraParamsRow.hidden = fractal.fractalType !== 'lyra'
     juliaToggle.checked = fractal.juliaMode
     juliaToggle.disabled = fractal.fractalType === 'lyra' // Julia mode does not apply to Lyra
+    juliaParamsRow.hidden = !fractal.juliaMode
+    if (fractal.juliaMode && fractal.juliaSeed) {
+        const re = juliaSeedRe(), im = juliaSeedIm()
+        juliaXSlider.min = juliaSliderBase[0] - JULIA_SLIDER_SPAN
+        juliaXSlider.max = juliaSliderBase[0] + JULIA_SLIDER_SPAN
+        juliaISlider.min = juliaSliderBase[1] - JULIA_SLIDER_SPAN
+        juliaISlider.max = juliaSliderBase[1] + JULIA_SLIDER_SPAN
+        juliaXSlider.value = re
+        juliaISlider.value = im
+        juliaXInput.value = re
+        juliaIInput.value = im
+    }
     lyraSequenceInput.value = fractal.lyraSequence
     absVariantSelect.value = fractal.absVariant
     gyreThetaSlider.value = fractal.gyreTheta
@@ -1373,6 +1436,10 @@ function applyHomeView(type) {
     fractal.setZoom(fxp.fromNumber(home[2] || 1))
     fractal.setCenter([fxp.fromNumber(home[0]), fxp.fromNumber(home[1])])
 }
+
+function juliaSeedRe() { return fractal.juliaSeed ? fractal.juliaSeed[0].toNumber() : 0 }
+function juliaSeedIm() { return fractal.juliaSeed ? fractal.juliaSeed[1].toNumber() : 0 }
+function recenterJuliaSliders() { juliaSliderBase = [juliaSeedRe(), juliaSeedIm()] }
 
 function exitJuliaMode() {
     fractal.juliaMode = false
@@ -1617,6 +1684,7 @@ function initFromParams(params) {
         fractal.juliaMode = true
         fractal.juliaSeed = p.julia.map(fxp.fromJSON)
         fractal.preJuliaView = null
+        recenterJuliaSliders()
     } else {
         exitJuliaMode()
     }
