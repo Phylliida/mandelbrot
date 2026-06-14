@@ -20,10 +20,10 @@ import {DEFAULT_DEGREE} from "./mandelbrotMultibrot.mjs";
 // the precision boost in index.js _updatePrecision.
 export const HIGH_DEGREE = 5
 
-// Max reference orbits a pixel tries before computing its own exact orbit. Bounds the per-pixel
-// reference scan in chaotic regions where most references glitch (so the scan is wasted) — the
-// fallback is exact, so the rendered value is unchanged.
-const MAX_REFERENCE_SCAN = 16
+// Floor for the per-pixel reference-scan cap (see scale-aware cap in calculate). The cap bounds
+// the scan in chaotic regions where most references glitch — the fallback is an exact own orbit,
+// so the rendered value is unchanged regardless of the cap.
+const MIN_REFERENCE_SCAN = 16
 
 function binomials(d) {
     const b = [1]
@@ -122,6 +122,10 @@ export class MandelbrotMultibrotPerturbation {
         // across whole regions. Any non-glitching reference yields the same (correct) value, so the
         // order we try them in does not affect the result, only how many we try.
         let lastRefIndex = 0
+        // Reference-scan cap, scaled by precision: a scan attempt is float (scale-independent) but a
+        // fallback own orbit is BigInt (cost grows ~scale^1.6), so at high precision it pays to scan
+        // many more references before computing one. Calibrated scale-300 -> 16, scale-1000 -> ~110.
+        const maxRefScan = this.maxRefScan ?? Math.max(MIN_REFERENCE_SCAN, Math.round(scale * scale / 9000))
         for (let y = 0; y < h; y++) {
             const di = (task.yOffset + y) / task.frameHeight * cHeight
             const skipLeft = skipTopLeft && y % 2 === 0
@@ -155,11 +159,10 @@ export class MandelbrotMultibrotPerturbation {
                         // usable reference and must compute its own exact orbit anyway, so scanning
                         // all of them (hundreds, in chaotic boundary regions) is wasted work. The
                         // result is unchanged — the fallback orbit is exact.
-                        const maxScan = this.maxRefScan ?? MAX_REFERENCE_SCAN
                         let scanned = 0
                         for (let refIndex = 0; refIndex < numRefs; refIndex++) {
                             if (refIndex === lastRefIndex) continue // already tried in the fast path
-                            if (scanned++ >= maxScan) break
+                            if (scanned++ >= maxRefScan) break
                             const iter = this.perturb(referencePoints[refIndex], dr, di, bailout)
                             if (iter >= 0) {
                                 values[offset] = this.smoothenDegree(smooth, offset, iter, this.lastZq)
