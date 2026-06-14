@@ -20,6 +20,11 @@ import {DEFAULT_DEGREE} from "./mandelbrotMultibrot.mjs";
 // the precision boost in index.js _updatePrecision.
 export const HIGH_DEGREE = 5
 
+// Max reference orbits a pixel tries before computing its own exact orbit. Bounds the per-pixel
+// reference scan in chaotic regions where most references glitch (so the scan is wasted) — the
+// fallback is exact, so the rendered value is unchanged.
+const MAX_REFERENCE_SCAN = 16
+
 function binomials(d) {
     const b = [1]
     for (let k = 1; k <= d; k++) {
@@ -112,6 +117,11 @@ export class MandelbrotMultibrotPerturbation {
             if (this.ctx.shouldStop()) return
         }
 
+        // Index of the reference the previous pixel used; adjacent pixels almost always share a
+        // reference, so trying it first turns the per-pixel reference scan into a single attempt
+        // across whole regions. Any non-glitching reference yields the same (correct) value, so the
+        // order we try them in does not affect the result, only how many we try.
+        let lastRefIndex = 0
         for (let y = 0; y < h; y++) {
             const di = (task.yOffset + y) / task.frameHeight * cHeight
             const skipLeft = skipTopLeft && y % 2 === 0
@@ -127,43 +137,68 @@ export class MandelbrotMultibrotPerturbation {
 
                     const referencePoints = this.referencePoints
                     const numRefs = referencePoints.length
-                    for (let refIndex = 0; refIndex < numRefs; refIndex++) {
-                        const referencePoint = referencePoints[refIndex]
-                        const refDr = referencePoint[0][0]
-                        const refDi = referencePoint[0][1]
 
-                        const dcr = dr - refDr
-                        const dci = di - refDi
-                        const iter = this.julia
-                            ? this.multibrot_perturbation(dcr, dci, 0, 0, this.max_iter, bailout, referencePoint[3], referencePoint[4])
-                            : this.multibrot_perturbation(dcr, dci, dcr, dci, this.max_iter, bailout, referencePoint[3], referencePoint[4])
+                    // Fast path: try the previous pixel's reference before scanning all of them.
+                    if (this.fastReference !== false && lastRefIndex < numRefs) {
+                        const iter = this.perturb(referencePoints[lastRefIndex], dr, di, bailout)
                         if (iter >= 0) {
                             values[offset] = this.smoothenDegree(smooth, offset, iter, this.lastZq)
                             found = true
                             stats.numberOfLowPrecisionPoints++
-                            break
+                        } else {
+                            stats.numberOfLowPrecisionMisses++
                         }
-                        stats.numberOfLowPrecisionMisses++
-                        if (iter === -2) {
-                            break // pixel outlives this (longest remaining) reference
+                    }
+
+                    if (!found) {
+                        // Cap the scan: a pixel that glitches against the longest references has no
+                        // usable reference and must compute its own exact orbit anyway, so scanning
+                        // all of them (hundreds, in chaotic boundary regions) is wasted work. The
+                        // result is unchanged — the fallback orbit is exact.
+                        const maxScan = this.maxRefScan ?? MAX_REFERENCE_SCAN
+                        let scanned = 0
+                        for (let refIndex = 0; refIndex < numRefs; refIndex++) {
+                            if (refIndex === lastRefIndex) continue // already tried in the fast path
+                            if (scanned++ >= maxScan) break
+                            const iter = this.perturb(referencePoints[refIndex], dr, di, bailout)
+                            if (iter >= 0) {
+                                values[offset] = this.smoothenDegree(smooth, offset, iter, this.lastZq)
+                                found = true
+                                lastRefIndex = refIndex
+                                stats.numberOfLowPrecisionPoints++
+                                break
+                            }
+                            stats.numberOfLowPrecisionMisses++
+                            if (iter === -2) {
+                                break // pixel outlives this (longest remaining) reference
+                            }
                         }
                     }
 
                     if (!found) {
                         const newRef = this.calculate_reference(refr, refi, dr, di, bigScale, scaleFactor, bigBailout)
                         values[offset] = this.smoothenDegree(smooth, offset, newRef[1], Number(newRef[2]) / scaleFactor)
-                        const referencePoints = this.referencePoints
                         let pos = 0
                         while (pos < referencePoints.length && referencePoints[pos][4] >= newRef[4]) {
                             pos++
                         }
                         referencePoints.splice(pos, 0, newRef)
+                        lastRefIndex = pos // the new reference is closest to this pixel — try it first next
                         if (this.ctx.shouldStop()) return
                     }
                 }
             }
             if (this.ctx.shouldStop()) return
         }
+    }
+
+    // One perturbation attempt of a pixel (dr, di) against a reference point; see multibrot_perturbation.
+    perturb(referencePoint, dr, di, bailout) {
+        const dcr = dr - referencePoint[0][0]
+        const dci = di - referencePoint[0][1]
+        return this.julia
+            ? this.multibrot_perturbation(dcr, dci, 0, 0, this.max_iter, bailout, referencePoint[3], referencePoint[4])
+            : this.multibrot_perturbation(dcr, dci, dcr, dci, this.max_iter, bailout, referencePoint[3], referencePoint[4])
     }
 
     // Like the shared smoothen but with the degree-aware fractional iteration (log d growth)
@@ -317,6 +352,17 @@ export class MandelbrotMultibrotPerturbation {
      */
     multibrot_high_precision(z0r, z0i, addr, addi, max_iter, bailout, scale, includeZ0) {
         const d = this.degree
+        // z^d by binary exponentiation: a complex square needs only 2 BigInt mults and a complex
+        // multiply 3 (Gauss), vs 4 per step for the naive (d−1)-multiply chain. For d=8 this is
+        // 3 squarings (6 mults) instead of 7 multiplies (28) — ~3.3x fewer BigInt multiplies.
+        // powSteps[s] = true means "multiply by z after squaring" (the s-th bit of d below the top).
+        if (!this.powSteps || this.powStepsDegree !== d) {
+            this.powSteps = []
+            const bits = d.toString(2)
+            for (let i = 1; i < bits.length; i++) this.powSteps.push(bits[i] === '1')
+            this.powStepsDegree = d
+        }
+        const steps = this.powSteps, nSteps = steps.length
         let zr = z0r
         let zi = z0i
         let iter = -1
@@ -329,28 +375,35 @@ export class MandelbrotMultibrotPerturbation {
             if (iter++ === max_iter) {
                 return [2, 0n, seq]
             }
-            // z^d by repeated complex multiplication in fixed point
-            let wr = zr
-            let wi = zi
-            for (let k = 1; k < d; k++) {
-                const t = (wr * zr - wi * zi) >> scale
-                wi = (wr * zi + wi * zr) >> scale
-                wr = t
+            let rr = zr, ri = zi
+            for (let s = 0; s < nSteps; s++) {
+                const sre = ((rr + ri) * (rr - ri)) >> scale // rr² − ri²
+                ri = ((rr * ri) << 1n) >> scale               // 2·rr·ri
+                rr = sre
+                if (steps[s]) {                               // × z (Gauss: 3 mults)
+                    const t1 = rr * zr, t2 = ri * zi, t3 = (rr + ri) * (zr + zi)
+                    rr = (t1 - t2) >> scale
+                    ri = (t3 - t1 - t2) >> scale
+                }
             }
-            zr = wr + addr
-            zi = wi + addi
+            zr = rr + addr
+            zi = ri + addi
             seq.push([zr, zi])
             zq = ((zr * zr) >> scale) + ((zi * zi) >> scale)
         }
         // one more point so that pixels escaping just after the reference still have orbit data
-        let wr = zr
-        let wi = zi
-        for (let k = 1; k < d; k++) {
-            const t = (wr * zr - wi * zi) >> scale
-            wi = (wr * zi + wi * zr) >> scale
-            wr = t
+        let rr = zr, ri = zi
+        for (let s = 0; s < nSteps; s++) {
+            const sre = ((rr + ri) * (rr - ri)) >> scale
+            ri = ((rr * ri) << 1n) >> scale
+            rr = sre
+            if (steps[s]) {
+                const t1 = rr * zr, t2 = ri * zi, t3 = (rr + ri) * (zr + zi)
+                rr = (t1 - t2) >> scale
+                ri = (t3 - t1 - t2) >> scale
+            }
         }
-        seq.push([wr + addr, wi + addi])
+        seq.push([rr + addr, ri + addi])
         return [includeZ0 ? iter + 5 : iter + 4, zq, seq]
     }
 }
