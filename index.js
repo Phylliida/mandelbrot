@@ -929,6 +929,7 @@ function setIterations(value) {
     const newIter = Math.min(100000, Math.max(100, value))
     if (newIter !== fractal.max_iter) {
         fractal.max_iter = newIter
+        fractal._updatePrecision() // high-degree multibrot precision depends on max_iter
         console.log(`max_iter: ${fractal.max_iter}`)
         fractal.initPallete()
         iterationsElement.value = fractal.max_iter
@@ -1697,10 +1698,11 @@ function initFromParams(params) {
     } else {
         exitJuliaMode()
     }
-    fractal.setZoom(fxp.fromJSON(p.zoom))
-    fractal.setCenter(p.center.map(fxp.fromJSON))
+    // set max_iter/smooth before setZoom: _updatePrecision (high-degree multibrot) depends on max_iter
     fractal.max_iter = p.max_iter
     fractal.smooth = p.smooth
+    fractal.setZoom(fxp.fromJSON(p.zoom))
+    fractal.setCenter(p.center.map(fxp.fromJSON))
     if (p.palette) {
         if (p.palette.colors) {
             paletteSelector.setEmbeddedPalette(p.palette.colors, p.palette.mirror)
