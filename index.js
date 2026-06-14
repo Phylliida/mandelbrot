@@ -24,6 +24,10 @@ const MAX_PIXEL_SIZE = 16
 // engines floor precision at 58, which handles these wide low-zoom views fine.
 const MIN_ZOOM = fxp.fromNumber(1 / 1024)
 
+// The engines convert fixed-point to float with Math.pow(2, scale), which overflows to Infinity at
+// scale >= 1024. Keep any working precision safely below that (~1e300 of zoom is the practical floor).
+const MAX_SAFE_PRECISION = 1000
+
 // Each fractal lives in its own part of the complex plane
 const FRACTAL_HOME_VIEWS = {
     mandelbrot: [-0.5, 0],
@@ -184,9 +188,13 @@ class Mandelbrot {
         // precision scaled by degree and iteration count (~0.02·(d−2) bits/iteration, measured
         // empirically); lower degrees render correctly without it. Only affects the deep/perturbation
         // path (the routing requiredPrecision is unchanged). Keep the >=5 threshold in sync with
-        // HIGH_DEGREE in mandelbrotMultibrotPerturbation.mjs.
+        // HIGH_DEGREE in mandelbrotMultibrotPerturbation.mjs. The boost is capped below 1024 because
+        // the engines use Math.pow(2, scale) as a float scaleFactor, which overflows to Infinity at
+        // scale >= 1024 (NaN -> BigInt crash); views needing more (very high max_iter) can't be fully
+        // resolved by the float perturbation and should use a lower max_iter.
         if (this.fractalType === 'multibrot' && this.multibrotDegree >= 5 && this.requiredPrecision > 58) {
-            this.precision += Math.ceil(0.02 * (this.multibrotDegree - 2) * this.max_iter)
+            const boosted = this.precision + Math.ceil(0.02 * (this.multibrotDegree - 2) * this.max_iter)
+            this.precision = Math.max(this.precision, Math.min(boosted, MAX_SAFE_PRECISION))
         }
         this.zoom = this.zoom.withScale(this.precision)
         this.center[0] = this.center[0].withScale(this.precision)
