@@ -44,6 +44,10 @@ export async function recordFlight(fractal, canvas, fxp, callbacks) {
     }
 
     const targetZoom = fractal.zoom
+    // The full-precision target center. setZoom(1) drops the working precision to ~58 bits and
+    // re-scales the stored center down to it, discarding the ~hundreds of bits that locate a deep
+    // target — so without restoring it each frame the flight zooms back in to the wrong place.
+    const targetCenter = [fractal.center[0], fractal.center[1]]
     const doublings = Math.max(1, targetZoom.bits())
     const frames = Math.max(MIN_FRAMES, Math.min(MAX_FRAMES, Math.round(doublings * FRAMES_PER_DOUBLING)))
     const factor = Math.pow(2, doublings / frames)
@@ -60,6 +64,10 @@ export async function recordFlight(fractal, canvas, fxp, callbacks) {
         } else if (i > 0) {
             fractal.setZoom(fractal.zoom.multiply(fxp.fromNumber(factor, fractal.precision)))
         }
+        // Re-anchor on the full-precision center: setZoom just truncated it to this frame's
+        // precision, which would compound into drift at deep zoom (each frame must derive from the
+        // true target, not the previous truncation).
+        fractal.setCenter([targetCenter[0], targetCenter[1]])
         await fractal.renderOnce()
         const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/webp', 0.92))
         if (!blob) {
