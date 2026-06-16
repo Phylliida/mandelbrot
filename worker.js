@@ -21,6 +21,7 @@ import {MandelbrotAbsFamily} from "./mandelbrotAbsFamily.mjs";
 import {MandelbrotGyre} from "./mandelbrotGyre.mjs";
 import {MandelbrotGyrePerturbation} from "./mandelbrotGyrePerturbation.mjs";
 import {MandelbrotLyra} from "./mandelbrotLyra.mjs";
+import {MandelbrotKali} from "./mandelbrotKali.mjs";
 import {MandelbrotAbsFamilyPerturbation} from "./mandelbrotAbsFamilyPerturbation.mjs";
 import {MandelbrotWebGPU} from "./mandelbrotWebGPU.mjs";
 
@@ -111,6 +112,11 @@ async function initMandelbrotLyra() {
     return new MandelbrotLyra(ctx)
 }
 
+async function initMandelbrotKali() {
+    await new Promise(resolve => setTimeout(resolve, 1))
+    return new MandelbrotKali(ctx)
+}
+
 async function initMandelbrotAbsFamily() {
     await new Promise(resolve => setTimeout(resolve, 1))
     return new MandelbrotAbsFamily(ctx)
@@ -139,6 +145,7 @@ const mandelbrotAbsFamily = initMandelbrotAbsFamily();
 const mandelbrotGyre = initMandelbrotGyre();
 const mandelbrotGyrePerturbation = initMandelbrotGyrePerturbation();
 const mandelbrotLyra = initMandelbrotLyra();
+const mandelbrotKali = initMandelbrotKali();
 const mandelbrotAbsFamilyPerturbation = initMandelbrotAbsFamilyPerturbation();
 
 onmessage = handleMessage
@@ -168,6 +175,8 @@ async function handleMessage(msg) {
                                         ? (message.requiredPrecision > 58 ? mandelbrotGyrePerturbation : mandelbrotGyre)
                                     : message.fractal === 'lyra'
                                         ? mandelbrotLyra
+                                    : message.fractal === 'kali'
+                                        ? mandelbrotKali
                                     : message.requiredPrecision > 1020 && !message.julia // the extended float algorithm has no julia support
                                     ? mandelbrotPerturbationExtFloat
                                     : message.requiredPrecision > 58
