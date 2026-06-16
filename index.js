@@ -38,6 +38,7 @@ const FRACTAL_HOME_VIEWS = {
     absfamily: [-0.5, 0],
     gyre: [-0.5, 0],
     lyra: [1.8, 1.8, 2.5], // optional 3rd element = home zoom (Lyra's structure lives in a ~1.6-wide box)
+    kali: [0.65, 0.65, 2.5], // parameter plane; the structured region sits around (0.65, 0.65)
     mirage: [-5.9, 0],
 }
 const LYRA_DEFAULT_SEQUENCE = 'AB'
